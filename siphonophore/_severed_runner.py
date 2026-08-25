@@ -2,13 +2,17 @@
 
 Invoked by `Colony._dispatch_severed` as:
 
-    python -m siphonophore._severed_runner <checkin_socket_path> <nonce> <payload_json>
+    python -m siphonophore._severed_runner <checkin_socket_path> <nonce_fd> <payload_json>
 
 where `payload_json` decodes to `{"factory": "module:qualname", "kwargs": {...}, "task": ...,
-"invocation_state": {...}}` -- see `orchestrator.build_argv`. Everything this process needs
-arrives via argv, never an env var (see `checkin.py`'s docstring for why that matters: an env var
-is readable via `/proc/<pid>/environ` at the parent's own privilege level regardless of this
-process's own, lower-privileged uid).
+"invocation_state": {...}}` -- see `orchestrator.build_argv`. The socket path, recipe reference,
+and task travel via argv (none of them are secrets). The check-in nonce deliberately does not:
+`nonce_fd` is a file descriptor number, inherited from the parent via `pass_fds` at spawn time,
+whose *content* (read exactly once, here) is the actual nonce. Checked directly against a real
+Linux host, not assumed: `/proc/<pid>/cmdline` is world-readable (mode 0444) for this process's
+entire lifetime, so a nonce placed in argv would be readable by any local process, any uid, the
+whole time this process runs -- not just briefly. A pipe fd has no such exposure; nothing besides
+the two ends of that specific pipe can read it, regardless of uid.
 
 The check-in is this process's first action, before touching its own recipe or task at all -- a
 node that did real work before checking in would have already defeated the point: the check-in is
@@ -24,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from typing import Any
 
@@ -71,10 +76,20 @@ def _build_envelope(result: AgentResult) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) != 3:
-        print("usage: python -m siphonophore._severed_runner <socket_path> <nonce> <payload_json>", file=sys.stderr)
+        print(
+            "usage: python -m siphonophore._severed_runner <socket_path> <nonce_fd> <payload_json>",
+            file=sys.stderr,
+        )
         return 2
-    socket_path, nonce, payload_json = args
+    socket_path, nonce_fd_str, payload_json = args
     payload = json.loads(payload_json)
+
+    # Read the nonce exactly once, from the inherited pipe fd -- not argv (see module docstring
+    # for why: /proc/<pid>/cmdline is world-readable, this pipe fd is not readable by anything
+    # outside its own two ends). The fd is closed by this read; there is nothing else on it.
+    nonce_fd = int(nonce_fd_str)
+    with os.fdopen(nonce_fd, "r") as f:
+        nonce = f.read()
 
     # First action, full stop: check in, before touching the recipe or task at all.
     checkin.check_in(socket_path, nonce)

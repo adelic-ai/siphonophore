@@ -24,6 +24,16 @@ def _socket_path() -> str:
     return os.path.join(tempfile.mkdtemp(), "severed-runner-test.sock")
 
 
+def _nonce_read_fd(nonce: str) -> int:
+    """Writes `nonce` into a fresh pipe and returns the read end's fd -- the same shape
+    `Colony._dispatch_severed` hands the runner in production (see orchestrator.py), so these
+    tests exercise the real argv/fd contract, not the old (fixed) nonce-in-argv one."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, nonce.encode())
+    os.close(write_fd)
+    return read_fd
+
+
 def test_main_checks_in_runs_its_recipe_and_emits_a_result_envelope():
     """Calls the runner's own main() directly, in-process -- no subprocess, no uid switch -- to
     prove the check-in-then-run-then-emit sequence itself is correct."""
@@ -46,7 +56,7 @@ def test_main_checks_in_runs_its_recipe_and_emits_a_result_envelope():
         old_stdout = sys.stdout
         sys.stdout = captured
         try:
-            rc = main([path, nonce, payload])
+            rc = main([path, str(_nonce_read_fd(nonce)), payload])
         finally:
             sys.stdout = old_stdout
 
@@ -79,7 +89,7 @@ def test_main_checks_in_even_when_nobody_registered_the_nonce():
         old_stdout = sys.stdout
         sys.stdout = captured
         try:
-            rc = main([path, nonce, payload])
+            rc = main([path, str(_nonce_read_fd(nonce)), payload])
         finally:
             sys.stdout = old_stdout
         assert rc == 0
@@ -112,10 +122,15 @@ def test_runner_spawned_as_a_real_subprocess_round_trips_through_stdout():
                     "invocation_state": {},
                 }
             )
-            argv = [sys.executable, "-m", "siphonophore._severed_runner", path, nonce, payload]
+            nonce_fd = _nonce_read_fd(nonce)
+            argv = [sys.executable, "-m", "siphonophore._severed_runner", path, str(nonce_fd), payload]
             proc = await asyncio.create_subprocess_exec(
-                *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                pass_fds=(nonce_fd,),
             )
+            os.close(nonce_fd)  # the child has its own inherited copy now
             stdout, stderr = await proc.communicate()
             assert proc.returncode == 0, stderr.decode(errors="replace")
 

@@ -7,8 +7,10 @@ can alone produce a trustworthy pairing of "this OS process really is this node"
 over the wire is exactly as trustworthy as a self-reported log line, which is the whole class of
 problem this project exists to not repeat. It takes two independently-held pieces agreeing, the
 same shape as a Kerberos ticket: the broker holds a nonce it generated and never handed to anyone
-but the one process it's meant for (passed via an inherited file descriptor at spawn time, not an
-env var readable by anything at the parent's privilege level via /proc/<pid>/environ); the kernel,
+but the one process it's meant for (passed via an inherited file descriptor at spawn time -- not
+argv, which is world-readable via /proc/<pid>/cmdline on real Linux for a process's entire
+lifetime, checked directly against a real host, not assumed; an unrelated pipe fd has no such
+exposure to anything outside its own two ends, regardless of uid); the kernel,
 not the connecting process, holds the other half -- SO_PEERCRED on the Unix socket the check-in
 arrives on returns the real, unspoofable uid/pid of whatever actually opened that connection,
 verified by the kernel itself, not asserted by the caller. A check-in is only accepted when the

@@ -220,13 +220,16 @@ def test_await_checkin_returns_true_promptly_once_verified():
 
 
 def test_build_argv_shape():
+    """The nonce itself never appears in argv, on purpose -- only its fd number does. See
+    build_argv's docstring for why (argv is world-readable via /proc/<pid>/cmdline on real Linux;
+    a pipe fd is not readable by anything outside its own two ends)."""
     recipe = SeveredRecipe(factory="siphonophore.testing:make_stub_agent", kwargs={"text": "hi"})
-    argv = build_argv("/tmp/whatever.sock", "the-nonce", recipe, "do the task", {"k": 1})
+    argv = build_argv("/tmp/whatever.sock", 17, recipe, "do the task", {"k": 1})
 
     assert argv[0] == sys.executable
     assert argv[1:3] == ["-m", "siphonophore._severed_runner"]
     assert argv[3] == "/tmp/whatever.sock"
-    assert argv[4] == "the-nonce"
+    assert argv[4] == "17"
 
     import json
 

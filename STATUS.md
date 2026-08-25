@@ -145,6 +145,43 @@ propagated cleanly as that one node's own `FAILED` `NodeResult`, not a crash, no
 success. See `test_severed_dispatch_without_real_privilege_fails_cleanly_as_that_nodes_own_failure`
 (runs everywhere this repo's tests run, including right here).
 
+## A second real bug, found by questioning the design out loud, not by more testing
+
+After the fix above, the check-in nonce still traveled via argv (`build_argv`'s own docstring
+claimed this was safer than an env var -- "an env var is readable via `/proc/<pid>/environ` at the
+parent's own privilege level"). Asked directly: is nonce-plus-kernel-verified-uid actually
+principled, or just a hack layered on top of already-real primitives? Checked the claim itself
+empirically rather than defend it by assertion -- `ls -la /proc/<pid>/cmdline /proc/<pid>/environ`
+and a cross-uid read attempt (`sudo -u nobody cat ...`) on the real colima host, not reasoned about
+in the abstract:
+
+    -r--r--r-- 1 shunhonda shunhonda 0 ... /proc/6318/cmdline    <- world-readable
+    -r-------- 1 shunhonda shunhonda 0 ... /proc/6318/environ    <- owner-only
+    $ sudo -u nobody cat /proc/6318/cmdline   -> succeeds, prints the full command line
+    $ sudo -u nobody cat /proc/6318/environ   -> Permission denied
+
+The opposite of what the code assumed. `/proc/<pid>/cmdline` is world-readable by default on real
+Linux; `/proc/<pid>/environ` is actually the more protected of the two. A nonce placed in argv was
+readable by any local process, any uid, for the severed node's entire lifetime -- worse than the
+env var it was deliberately avoided in favor of, not better. (The nonce+uid *design* itself was
+never the hack, and remains right: `_handle`'s actual security boundary is the kernel-verified peer
+uid, with the nonce only ever used as an opaque lookup key -- a leaked nonce alone, without also
+controlling the matching uid, verifies nothing. What was sloppy was the *transport*, not the
+protocol.)
+
+Fixed: the nonce now travels via an inherited pipe file descriptor (`os.pipe()`, the read end
+passed through `pass_fds` at spawn, the write end written-and-closed by the broker before spawn) --
+readable by nothing outside that pipe's own two ends, regardless of uid. `Substrate.spawn`'s
+interface gained a `pass_fds` parameter to carry this correctly through Phase 2's abstraction too,
+not just Phase 1's inline dispatch (`ProcessSubstrate` forwards it; the two unbuilt tiers' stub
+signatures were updated to match so the interface stays consistent). Re-validated end to end on
+colima as root after the fix, including that a root-created pipe fd is correctly inherited by a
+child spawned under a *different*, lower-privileged uid via `pass_fds` combined with `user=` --
+not something to assume works without checking, since fd inheritance across a real privilege
+switch is exactly the kind of thing that could plausibly have its own permission quirks. It didn't:
+40/40 pass on colima as root, 32/32 (with 10 correctly skipped) on the Mac, both re-run after this
+fix, not just before it.
+
 ## Test status at last commit
 
 42 collected (identity: 6, checkin: 5, orchestrator: 23, severed_runner: 3, substrate: 5 --

@@ -11,10 +11,12 @@ against the installed package, not assumed -- see DESIGN.md).
 Severed dispatch wires together the two already-built, already-validated primitives:
 
     1. `identity.provision_identity(node_id)` -- a real uid + cgroup, before anything is spawned.
-    2. A nonce (`checkin.generate_nonce()`) registered with a `CheckinServer` before spawn.
-    3. `asyncio.create_subprocess_exec(..., user=<provisioned uid>)`, passing the nonce and the
-       recipe reference via argv -- never an env var (readable via `/proc/<pid>/environ` at the
-       parent's own privilege level; see `checkin.py`'s docstring).
+    2. A nonce (`checkin.generate_nonce()`) registered with a `CheckinServer` before spawn, written
+       into one end of a fresh pipe whose *other* end (the read fd) is passed to the child via
+       `pass_fds` -- not argv, not an env var. See `build_argv`'s docstring for why: checked
+       directly, `/proc/<pid>/cmdline` is world-readable on real Linux, which argv would have
+       exposed the nonce through for the child's entire lifetime.
+    3. `asyncio.create_subprocess_exec(..., user=<provisioned uid>, pass_fds=(nonce_read_fd,))`.
     4. `identity.add_pid_to_cgroup(...)` for the spawned pid.
     5. The child's first action, before touching its own recipe or task: `checkin.check_in(...)`
        (see `_severed_runner.py`).
@@ -32,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -165,17 +168,27 @@ def resolve_factory(reference: str) -> Callable[..., Agent]:
     return obj
 
 
-def build_argv(socket_path: str, nonce: str, recipe: SeveredRecipe, task: MultiAgentInput, invocation_state: dict[str, Any]) -> list[str]:
-    """The argv a severed node's child process is spawned with. The nonce and recipe reference
-    travel here, in argv -- not an env var, which is readable via `/proc/<pid>/environ` at the
-    parent's own privilege level regardless of the child's uid (see checkin.py's docstring)."""
+def build_argv(
+    socket_path: str, nonce_fd: int, recipe: SeveredRecipe, task: MultiAgentInput, invocation_state: dict[str, Any]
+) -> list[str]:
+    """The argv a severed node's child process is spawned with. The recipe reference and task
+    travel here, in argv -- neither is a secret. The nonce deliberately does NOT: it travels via
+    an inherited pipe file descriptor instead (`nonce_fd`, the read end, passed via
+    `pass_fds` at spawn time -- see `_dispatch_severed`), because checked directly against a real
+    Linux host, `/proc/<pid>/cmdline` is world-readable (mode 0444) for that process's entire
+    lifetime -- any local process, any uid, could read a nonce placed in argv, not just briefly at
+    exec time. (`/proc/<pid>/environ` is actually the *more* protected of the two, owner-uid-only
+    by default -- the opposite of what an earlier version of this code assumed without checking. A
+    pipe fd beats both: nothing outside the two ends of that specific pipe can read it at all.)"""
     payload = {
         "factory": recipe.factory,
         "kwargs": recipe.kwargs,
         "task": task,
         "invocation_state": invocation_state,
     }
-    return [sys.executable, "-m", "siphonophore._severed_runner", socket_path, nonce, json.dumps(payload)]
+    return [
+        sys.executable, "-m", "siphonophore._severed_runner", socket_path, str(nonce_fd), json.dumps(payload),
+    ]
 
 
 def parse_runner_output(node_id: str, stdout: bytes) -> tuple[AgentResult, Usage, Metrics, list[Interrupt]]:
@@ -319,15 +332,30 @@ class Colony(MultiAgentBase):
             self._checkin_server.register_pending(node_id, nonce, expected_uid=ident.uid)
 
             proc: asyncio.subprocess.Process | None = None
+            nonce_read_fd, nonce_write_fd = os.pipe()
             try:
-                # 3. Spawn the child under the provisioned uid; nonce + recipe travel via argv.
-                argv = build_argv(self._checkin_socket_path, nonce, node.recipe, task, invocation_state)
+                # The nonce travels to the child via this pipe's read end, inherited at spawn --
+                # not argv (world-readable via /proc/<pid>/cmdline on real Linux, confirmed
+                # directly, not assumed -- see build_argv's docstring) and not an env var either.
+                os.write(nonce_write_fd, nonce.encode())
+                os.close(nonce_write_fd)
+                nonce_write_fd = -1  # already closed; skip the finally-block close below
+
+                # 3. Spawn the child under the provisioned uid; only the nonce fd and recipe
+                # reference travel with it -- the recipe/task themselves aren't secrets.
+                argv = build_argv(self._checkin_socket_path, nonce_read_fd, node.recipe, task, invocation_state)
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     user=ident.uid,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    pass_fds=(nonce_read_fd,),
                 )
+                # The child has its own independent copy of the read end now (duplicated across
+                # the fork/exec by pass_fds) -- this process's copy is no longer needed. Closing it
+                # does not affect the child's copy.
+                os.close(nonce_read_fd)
+                nonce_read_fd = -1
 
                 # 4. Track the whole descendant subtree via cgroup, not just this one pid.
                 identity.add_pid_to_cgroup(ident.cgroup_path, proc.pid)
@@ -348,6 +376,12 @@ class Colony(MultiAgentBase):
                     )
                 agent_result, usage, metrics, interrupts = parse_runner_output(node_id, stdout)
             finally:
+                # Safe-close whichever end(s) of the nonce pipe are still open -- both start real,
+                # both get set to -1 the moment this code itself closes them, so this never
+                # double-closes a fd on the happy path and still cleans up on any early exception.
+                for fd in (nonce_read_fd, nonce_write_fd):
+                    if fd != -1:
+                        os.close(fd)
                 if proc is not None and proc.returncode is None:
                     proc.kill()
                     await proc.wait()

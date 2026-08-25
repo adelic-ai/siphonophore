@@ -41,9 +41,12 @@ def test_process_substrate_spawns_collects_and_tears_down_for_real():
         try:
             nonce = checkin.generate_nonce()
             server.register_pending("test-node", nonce, expected_uid=os.getuid())
+            read_fd, write_fd = os.pipe()
+            os.write(write_fd, nonce.encode())
+            os.close(write_fd)
             argv = build_argv(
                 socket_path,
-                nonce,
+                read_fd,
                 SeveredRecipe(factory="siphonophore.testing:make_stub_agent", kwargs={"text": "via substrate"}),
                 "hi",
                 {},
@@ -51,7 +54,8 @@ def test_process_substrate_spawns_collects_and_tears_down_for_real():
 
             substrate = ProcessSubstrate()
             identity = _self_identity()
-            handle = await substrate.spawn(identity, argv)
+            handle = await substrate.spawn(identity, argv, pass_fds=(read_fd,))
+            os.close(read_fd)  # the child has its own inherited copy now
             try:
                 result = await substrate.collect(handle)
             finally:

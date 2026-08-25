@@ -48,11 +48,16 @@ class Substrate(abc.ABC):
     `add_severed_node(..., substrate=...)` parameter would accept."""
 
     @abc.abstractmethod
-    async def spawn(self, identity: Identity, argv: list[str]) -> Any:
+    async def spawn(self, identity: Identity, argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> Any:
         """Starts the node's work under this substrate, given its already-provisioned `Identity`
         and the argv a bare-process tier would exec directly (`orchestrator.build_argv`'s output).
-        Returns an opaque handle passed to `collect`/`teardown` -- an `asyncio.subprocess.Process`
-        for the bare-process tier; a container/VM handle for the heavier tiers."""
+        `pass_fds` must be forwarded to whatever actually spawns the process -- `argv` references
+        the check-in nonce only as a bare fd number (see `build_argv`'s docstring for why: argv
+        itself is world-readable via /proc/<pid>/cmdline on real Linux), so a substrate that
+        silently drops `pass_fds` would hand the node an fd number pointing at nothing it can
+        actually read, not a smaller but working nonce channel. Returns an opaque handle passed to
+        `collect`/`teardown` -- an `asyncio.subprocess.Process` for the bare-process tier; a
+        container/VM handle for the heavier tiers."""
 
     @abc.abstractmethod
     async def collect(self, handle: Any) -> SubstrateResult:
@@ -74,12 +79,15 @@ class ProcessSubstrate(Substrate):
     fits the one tier that's built, before either of the two unbuilt tiers is asked to fit it too.
     """
 
-    async def spawn(self, identity: Identity, argv: list[str]) -> asyncio.subprocess.Process:
+    async def spawn(
+        self, identity: Identity, argv: list[str], *, pass_fds: tuple[int, ...] = ()
+    ) -> asyncio.subprocess.Process:
         return await asyncio.create_subprocess_exec(
             *argv,
             user=identity.uid,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            pass_fds=pass_fds,
         )
 
     async def collect(self, handle: asyncio.subprocess.Process) -> SubstrateResult:
@@ -106,7 +114,7 @@ class ContainerSubstrate(Substrate):
     issue #2830's `BubblewrapSandbox`) is a separately-scoped pass. Every method here raises
     naming itself -- never a silent no-op, never a fake container."""
 
-    async def spawn(self, identity: Identity, argv: list[str]) -> Any:
+    async def spawn(self, identity: Identity, argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> Any:
         raise NotImplementedError("ContainerSubstrate.spawn is an interface stub, not built -- see STATUS.md")
 
     async def collect(self, handle: Any) -> SubstrateResult:
@@ -121,7 +129,7 @@ class MicroVMSubstrate(Substrate):
     for the highest-risk quadrant (broad authority AND untrusted-input exposure), not a default.
     NOT IMPLEMENTED -- see STATUS.md."""
 
-    async def spawn(self, identity: Identity, argv: list[str]) -> Any:
+    async def spawn(self, identity: Identity, argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> Any:
         raise NotImplementedError("MicroVMSubstrate.spawn is an interface stub, not built -- see STATUS.md")
 
     async def collect(self, handle: Any) -> SubstrateResult:
