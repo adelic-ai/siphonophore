@@ -117,6 +117,15 @@ class CheckinServer:
             os.unlink(self._socket_path)
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._sock.bind(self._socket_path)
+        # bind() creates the socket file with the broker's own umask-restricted permissions --
+        # typically 0755, which a provisioned node's uid (neither the owner nor in the owner's
+        # group, since it's a freshly created, otherwise-empty account) cannot connect() to:
+        # AF_UNIX connect needs write permission on the socket special file itself. Widening to
+        # 0o777 does not weaken verification -- the actual security boundary is _handle's
+        # nonce+kernel-verified-uid check below, not filesystem access to the socket. A connection
+        # from an unregistered nonce or a mismatched peer uid is silently dropped regardless of
+        # how it reached accept() at all.
+        os.chmod(self._socket_path, 0o777)
         self._sock.listen(16)
         self._thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._thread.start()
