@@ -1,0 +1,31 @@
+{
+  "workdir": "/tmp/sipho-009-29br02by",
+  "broker_uid": 0,
+  "predicate_a_happy_path": {
+    "execution_class": "uid_cgroup",
+    "file_content_matches": true,
+    "provisioned_uid_differs_from_broker": true,
+    "kernel_uid_matches_provisioned": true,
+    "self_report_uid_matches_kernel": true,
+    "digest_bound_in_decision": true,
+    "cgroup_released": true,
+    "user_released": true
+  },
+  "predicate_b_swapped_artifact_refused_before_provisioning": {
+    "raised_artifact_mismatch": true,
+    "error": "artifact digest mismatch: decision authorized d00d283f9ad8..., but the code about to run hashes to 6d326df8d62c...",
+    "file_absent": true,
+    "no_new_users_provisioned": true,
+    "no_new_cgroups_provisioned": true
+  },
+  "predicate_c_forged_refused": {
+    "refused": true,
+    "file_absent": true,
+    "no_new_users_provisioned": true
+  },
+  "predicate_d_digest_tamper_refused": {
+    "gate_verify_result": false,
+    "executor_refused": true,
+    "file_absent": true
+  }
+}
