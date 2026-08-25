@@ -1,0 +1,23 @@
+{
+  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-008-oy7tqtq3",
+  "predicate_a_happy_path": {
+    "execution_class": "separate_process",
+    "file_exists": true,
+    "file_content_matches_program_a": true,
+    "digest_bound_in_decision": true
+  },
+  "predicate_b_swapped_artifact_refused": {
+    "raised_artifact_mismatch": true,
+    "error": "artifact digest mismatch: decision authorized 3494f2afdcbf..., but the code about to run hashes to 2b2e162485b5...",
+    "file_absent": true
+  },
+  "predicate_c_forged_refused": {
+    "refused": true,
+    "file_absent": true
+  },
+  "predicate_d_digest_tamper_refused": {
+    "gate_verify_result": false,
+    "executor_refused": true,
+    "file_absent": true
+  }
+}
