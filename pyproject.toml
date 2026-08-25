@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Real per-node OS identity, provisioning, and check-in for Strands multi-agent orchestrators."
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-dependencies = []
+dependencies = ["strands-agents>=1.53.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
