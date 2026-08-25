@@ -1,0 +1,37 @@
+{
+  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-003-_wn8apai",
+  "executor_process_pid": 79144,
+  "predicate_a_same_process": {
+    "execution_class_assigned": "same_process",
+    "effect": {
+      "effect": "write_file",
+      "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-003-_wn8apai/low_consequence.txt",
+      "execution_class": "same_process",
+      "acting_pid": 79144
+    },
+    "file_exists": true,
+    "file_content_matches": true,
+    "acting_pid_equals_executor_pid": true
+  },
+  "predicate_b_separate_process": {
+    "execution_class_assigned": "separate_process",
+    "effect": {
+      "effect": "write_file",
+      "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-003-_wn8apai/high_consequence.txt",
+      "execution_class": "separate_process",
+      "acting_pid": 79145
+    },
+    "file_exists": true,
+    "file_content_matches": true,
+    "acting_pid_differs_from_executor_pid": true
+  },
+  "predicate_c_forged_refused": {
+    "refused": true,
+    "forged_file_absent": true
+  },
+  "predicate_d_downgrade_replay_refused": {
+    "gate_verify_result": false,
+    "executor_refused": true,
+    "downgrade_target_file_absent": true
+  }
+}
