@@ -74,6 +74,25 @@ if not perform_checkin(socket_path, nonce):
 """
 
 
+class CheckinFailedError(IdentityError):
+    """A delegated execution failed or timed out its check-in. Carries `observations` -- every
+    diagnostic field collected before the failure (provisioned uid, kernel-verified uid from
+    /proc, the check-in result itself, and any output the child produced before being killed) --
+    so a caller catching this doesn't lose that trail the way a bare exception message would.
+
+    What failed is attribution -- the binding between the identity the broker provisioned and the
+    process claiming to be it -- not necessarily "nothing happened." In this backend's own wrapper
+    (_CHECKIN_CHILD_WRAPPER) the child never reaches `intent.artifact_code` until after check-in
+    succeeds, so no artifact-authored effect can occur before this exception is raised through the
+    normal dispatch path -- but that is a property of this one wrapper shape, not a structural
+    guarantee the architecture makes for every possible check-in-gated backend, and should not be
+    assumed to hold for a different one without checking."""
+
+    def __init__(self, message: str, observations: dict) -> None:
+        super().__init__(message)
+        self.observations = observations
+
+
 class CheckedInUidCgroupBackend(ExecutionBackend):
     def __init__(self, uid_min: int = 63500, uid_max: int = 63599, cgroup_root: Path | None = None,
                  checkin_timeout: float = 10.0) -> None:
@@ -131,11 +150,24 @@ class CheckedInUidCgroupBackend(ExecutionBackend):
                     if proc.poll() is None:
                         proc.kill()
                     try:
-                        proc.wait(timeout=5)
+                        # communicate(), not a bare wait() -- captures whatever the child printed
+                        # before being killed instead of silently discarding it. In this backend's
+                        # own wrapper that is never artifact-authored output (check-in gates
+                        # {body}), but the diagnostic is collected honestly rather than assumed
+                        # empty.
+                        stdout, stderr = proc.communicate(timeout=5)
+                        observations["child_stdout_before_checkin_failure"] = stdout
+                        observations["child_stderr_before_checkin_failure"] = stderr
                     except subprocess.TimeoutExpired:
                         pass
-                    raise IdentityError(
-                        f"execution {execution_id!r} failed check-in: {checkin_result.get('reason')}"
+                    observations["child_returncode"] = proc.returncode
+                    # Same dict object, not a copy -- the outer finally blocks below still mutate
+                    # it (cgroup_released, user_released) as cleanup runs during unwind, and those
+                    # mutations are visible via err.observations once the caller catches this,
+                    # since the finally blocks run before the exception fully leaves this frame.
+                    raise CheckinFailedError(
+                        f"execution {execution_id!r} failed check-in: {checkin_result.get('reason')}",
+                        observations=observations,
                     )
 
                 stdout, stderr = proc.communicate(timeout=10)

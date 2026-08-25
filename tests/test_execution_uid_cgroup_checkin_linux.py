@@ -146,8 +146,13 @@ with open(os.path.join(payload["outdir"], "silent.txt"), "w") as f:
 @requires_root_linux
 def test_checkin_timeout_is_an_identity_failure_and_still_releases_uid_and_cgroup(backend: CheckedInUidCgroupBackend):
     """A child that never performs check-in (here, by using a wrapper override that skips the
-    handshake entirely) must not be trusted -- CheckedInUidCgroupBackend.run() raises IdentityError
-    after the backend's own checkin_timeout, and the provisioned uid/cgroup are still released."""
+    handshake entirely) must not be trusted -- CheckedInUidCgroupBackend.run() raises
+    CheckinFailedError (an IdentityError) after the backend's own checkin_timeout, and the
+    provisioned uid/cgroup are still released.
+
+    The raised exception must also carry the diagnostic trail (provisioned_uid, the check-in
+    result, cleanup outcome) rather than discarding it as a bare message -- a caller catching a
+    check-in failure still needs to know what was collected before attribution failed."""
     intent = Intent(
         kind="delegate", principal_id="alice", intent_id="checkin-timeout-01", consequence="privileged",
         payload={}, artifact_code="pass",
@@ -155,12 +160,19 @@ def test_checkin_timeout_is_an_identity_failure_and_still_releases_uid_and_cgrou
     gate = Gate(ConsequencePolicy(mapping={"privileged": "uid_cgroup_checkin"}))
     decision = gate.submit(intent)
 
-    with pytest.raises(IdentityError):
+    with pytest.raises(IdentityError) as exc_info:
         backend.run(decision, intent, _child_wrapper=_NEVER_CHECKS_IN_WRAPPER)
+
+    obs = exc_info.value.observations
+    assert obs["provisioned_uid"] is not None
+    assert obs["checkin"]["verified"] is False
+    assert obs["checkin"]["reason"] == "timeout"
+    assert obs["cgroup_released"] is True  # outer finally ran and mutated the same dict before catch
+    assert obs["user_released"] is True
 
     import pwd
 
     username = f"sipho-core-{intent.intent_id[:8]}"
     with pytest.raises(KeyError):
-        pwd.getpwnam(username)  # released, not leaked, despite the raised IdentityError
+        pwd.getpwnam(username)  # released, not leaked, despite the raised exception
     assert not (Path("/sys/fs/cgroup/siphonophore-core-checkin") / f"exec-{intent.intent_id}").exists()
