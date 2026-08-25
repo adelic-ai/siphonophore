@@ -1,0 +1,35 @@
+{
+  "workdir": "/tmp/sipho-005-16927t01",
+  "broker_pid": 6896,
+  "broker_uid": 0,
+  "predicate_a_happy_path": {
+    "file_content_matches": true,
+    "checkin_verified": true,
+    "provisioned_uid": 63000,
+    "broker_uid": 0,
+    "provisioned_uid_differs_from_broker": true,
+    "so_peercred_matches_provisioned": true,
+    "so_peercred_matches_proc_status": true,
+    "self_report_uid_matches_kernel": true,
+    "cgroup_released": true,
+    "user_released": true
+  },
+  "predicate_b_impersonation_refused": {
+    "raised_checkin_error": true,
+    "error": "sub-agent 0e72af24-10e1-4ba5-934f-106cbc610c9e failed check-in verification",
+    "target_file_absent": true,
+    "no_leftover_sipho5_user": true
+  },
+  "predicate_c_never_checks_in_times_out": {
+    "raised_checkin_error": true,
+    "error": "sub-agent ef662ff7-19bb-4a24-a4fd-dd248046ba73 never checked in within 1.5s",
+    "target_file_absent": true,
+    "no_leftover_sipho5_user": true,
+    "no_leftover_exec_cgroup": true
+  },
+  "predicate_d_forged_refused_no_provisioning": {
+    "refused": true,
+    "target_file_absent": true,
+    "no_new_users_provisioned": true
+  }
+}

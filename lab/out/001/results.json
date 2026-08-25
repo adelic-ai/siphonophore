@@ -1,10 +1,10 @@
 {
-  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-001-gpzmgbw5",
+  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-001-d60pw01b",
   "predicate_a_mediated_write": {
     "decision_permitted": true,
     "effect": {
       "effect": "write_file",
-      "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-001-gpzmgbw5/mediated.txt",
+      "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-001-d60pw01b/mediated.txt",
       "principal_id": "principal-alice"
     },
     "file_exists": true,

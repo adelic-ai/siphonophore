@@ -1,14 +1,14 @@
 {
-  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-002-ix53xj_m",
+  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-002-u48q6ssl",
   "predicate_a_mediated_delegation": {
     "delegate_decision_permitted": true,
     "delegate_effect": {
       "effect": "delegate",
       "delegator_principal_id": "principal-alice",
-      "sub_intent_id": "35986ebf-381e-4f50-bbba-d81dffc5309d",
+      "sub_intent_id": "4fc1021f-25f8-4765-b708-5c0622c6097b",
       "sub_effect": {
         "effect": "write_file",
-        "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-002-ix53xj_m/sub_agent_effect.txt",
+        "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-002-u48q6ssl/sub_agent_effect.txt",
         "principal_id": "principal-alice.sub-agent-1"
       }
     },
