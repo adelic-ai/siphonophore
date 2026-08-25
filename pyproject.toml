@@ -18,3 +18,6 @@ include = ["siphonophore_core*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "linux_root_only: needs real root on real Linux (cgroup v2, useradd/userdel) -- run on colima, skipped elsewhere",
+]
