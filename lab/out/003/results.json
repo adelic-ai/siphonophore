@@ -1,0 +1,22 @@
+{
+  "low_consequence": {
+    "selected_execution_class": "same_process",
+    "reported_pid": 77964,
+    "ran_in_this_process": true,
+    "ground_truth_file_content_correct": true
+  },
+  "high_consequence": {
+    "selected_execution_class": "separate_process",
+    "reported_pid": 77965,
+    "ran_in_a_different_real_process": true,
+    "ground_truth_file_content_correct": true
+  },
+  "forged_bypass": {
+    "executor_raised": "GateBypassError: decision '774823b4-349f-4b12-b19b-513a556dd1c2' did not come from a real Gate -- effect refused",
+    "ground_truth_file_exists": false
+  },
+  "execution_class_downgrade_replay": {
+    "executor_raised": "GateBypassError: decision '9c7ec5b9-2298-411b-bf03-09096fcdfbf9' did not come from a real Gate -- effect refused",
+    "ground_truth_file_exists": false
+  }
+}
