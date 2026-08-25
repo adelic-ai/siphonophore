@@ -1,0 +1,30 @@
+{
+  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-001-gpzmgbw5",
+  "predicate_a_mediated_write": {
+    "decision_permitted": true,
+    "effect": {
+      "effect": "write_file",
+      "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-001-gpzmgbw5/mediated.txt",
+      "principal_id": "principal-alice"
+    },
+    "file_exists": true,
+    "file_content_matches": true
+  },
+  "predicate_b_forged_refused": {
+    "variants": [
+      {
+        "variant": "made_up_token",
+        "refused": true
+      },
+      {
+        "variant": "attacker_own_secret",
+        "refused": true
+      }
+    ],
+    "forged_file_absent": true
+  },
+  "gate_public_surface": [
+    "submit",
+    "verify"
+  ]
+}
