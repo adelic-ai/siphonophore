@@ -170,15 +170,26 @@ the first's now-released uid number. Fixed before merge; concurrent-identity sep
 covered elsewhere (`test_execution_uid_cgroup.py`, `test_identity_linux.py`), so nothing was lost
 by removing the wrong assertion.
 
-**An honest gap, not yet closed:** `identity.py` and `audit.py` are validated, freestanding
-primitives — proven against real delegated sub-agents on colima — but neither is wired into any
-`Executor` backend's actual dispatch path. `UidCgroupBackend` today trusts a spawned process the
-instant it's spawned (lab/004's original, simpler model), not gated by check-in the way lab/005's
-delegation-specific executor was; `reconcile_path()` is a utility a caller invokes explicitly, not
-something `Broker.dispatch()` runs automatically after a delegation. Per §6 step 4 ("discover which
-abstractions were wrong") this isn't a discovered flaw so much as an explicit boundary — DESIGN.md
-§6's own module sketch keeps `identity`/`audit` separate from `execution` — but it means "a
-delegation is trusted only after check-in" and "a delegation's self-report is automatically
-reconciled against ground truth" are both still aspirational for the formalized package, proven
-only in isolation (lab/005/006 and lab/007, and now identity.py/audit.py's own real-Linux tests),
-not yet as an integrated flow.
+**An honest gap, closed the same day it was named:** `identity.py` and `audit.py` were validated,
+freestanding primitives — proven against real delegated sub-agents on colima — but neither was
+wired into any `Executor` backend's actual dispatch path. Closed by
+`CheckedInUidCgroupBackend` (`execution_uid_cgroup_checkin.py`): a new `execution_class`,
+`"uid_cgroup_checkin"`, registered alongside (not replacing) the original unchecked
+`UidCgroupBackend`. The spawned process must pass a real check-in — nonce over an inherited pipe
+fd, `SO_PEERCRED` — before anything it did is trusted; a failed or timed-out check-in raises
+`identity.IdentityError`, with uid/cgroup released on every exit path including that one. If the
+caller supplies `"outdir"` in the intent's payload, the child's stdout is parsed as a self-report
+and automatically reconciled against ground truth from that directory — lab/007's four-case logic
+(corroborated/contradiction/unreported_activity/no_evidence), now produced automatically rather
+than assembled by hand, validated against a real delegate that actively lies about one file and a
+real delegate that prints no self-report at all (treated as empty claims, not a hard failure — no
+change of policy from `audit.py`'s own "self-report is optional" framing).
+
+Deliberately kept as its own execution class rather than folded into `UidCgroupBackend` or
+special-cased on `intent.kind`, per §2 (execution class follows authority, not capability type) and
+§7 (delegation is not a separately-mediated mechanism) — a caller that wants unchecked, lab/004-
+style trust still has it under `"uid_cgroup"`; check-in-gated trust is an additional, selectable
+tier a `Policy` can route to, not a replacement. What this pass did *not* decide: whether
+check-in-gated trust should eventually be the default for any delegation rather than an opt-in a
+caller has to choose (see DESIGN.md's "Explicitly open" section) — same_process and
+separate_process delegations still have no check-in or automatic-reconciliation equivalent at all.
