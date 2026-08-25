@@ -1,0 +1,68 @@
+{
+  "workdir": "/tmp/sipho-004-ieuqrqzh",
+  "broker_pid": 6777,
+  "broker_uid": 0,
+  "predicate_a_mediated_uid_cgroup_write": {
+    "execution_class_assigned": "uid_cgroup",
+    "file_exists": true,
+    "file_content_matches": true,
+    "effect": {
+      "effect": "write_file",
+      "execution_class": "uid_cgroup",
+      "acting_pid": 6785,
+      "observations": {
+        "provisioned_username": "sipho-452a3b89",
+        "provisioned_uid": 62001,
+        "provisioned_gid": 1002,
+        "cgroup_path": "/sys/fs/cgroup/siphonophore-exp004/exec-452a3b89-8fae-43bf-a32f-34e22fc43eb3",
+        "cgroup_members_while_blocked": [
+          6785
+        ],
+        "child_pid_in_cgroup_while_blocked": true,
+        "real_uid_from_proc_status": 62001,
+        "still_alive_at_membership_check": true,
+        "child_returncode": 0,
+        "child_self_report": {
+          "pid": 6785,
+          "self_reported_uid": 62001,
+          "self_reported_gid": 1002,
+          "path": "/tmp/sipho-004-ieuqrqzh/privileged_effect.txt",
+          "cgroup_self": "0::/siphonophore-exp004/exec-452a3b89-8fae-43bf-a32f-34e22fc43eb3"
+        },
+        "cgroup_released": true,
+        "user_released": true
+      }
+    }
+  },
+  "predicate_b_distinct_uid_ground_truth": {
+    "provisioned_uid": 62001,
+    "broker_uid": 0,
+    "real_uid_from_proc_status": 62001,
+    "child_self_reported_uid": 62001,
+    "provisioned_uid_differs_from_broker": true,
+    "kernel_ground_truth_matches_provisioned_uid": true,
+    "kernel_ground_truth_matches_child_self_report": true
+  },
+  "predicate_c_cgroup_membership_while_running": {
+    "still_alive_at_check": true,
+    "child_pid_in_cgroup_while_blocked": true,
+    "cgroup_members_observed": [
+      6785
+    ]
+  },
+  "predicate_d_clean_release": {
+    "cgroup_released": true,
+    "user_released": true
+  },
+  "predicate_e_forged_refused_no_side_effects": {
+    "refused": true,
+    "forged_file_absent": true,
+    "no_new_users_provisioned": true,
+    "no_new_cgroups_provisioned": true
+  },
+  "predicate_f_downgrade_replay_refused": {
+    "gate_verify_result": false,
+    "executor_refused": true,
+    "downgrade_target_file_absent": true
+  }
+}
