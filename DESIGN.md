@@ -246,7 +246,10 @@ about itself at startup. Which of these it actually is has not been decided here
   exists, and the exact mechanics (which TPM tooling, how a quote's PCR values map to "expected,"
   how a harness without TPM hardware degrades — refuses to start, or runs with attestation
   explicitly disclosed as absent rather than silently skipped) are all unresolved.
-- §8's execution provenance (an artifact digest bound alongside execution class) is stated as a
-  requirement, not yet implemented anywhere, including in the five lab experiments already built.
+- §8's execution provenance is implemented and tested (`lab/008`, and combined with `uid_cgroup` in
+  `lab/009`) as an inline-code digest. Real deployments would more likely authorize a *reference*
+  (a module path, a container image digest, a package version) rather than inline source — what
+  exactly gets hashed for a reference-based artifact, and how that generalizes past inline strings,
+  remains open.
 - Whether broker-integrity attestation is a platform-measurement concern or a supply-chain/
   deployment-time concern — §8 names the question without answering it.
