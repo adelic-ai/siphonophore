@@ -1,0 +1,19 @@
+{
+  "critical_consequence": {
+    "selected_execution_class": "uid_cgroup",
+    "reported_uid": 59001,
+    "broker_uid": 0,
+    "ran_under_a_different_provisioned_uid": true,
+    "pid_was_in_cgroup_while_running": true,
+    "ground_truth_file_content_correct": true,
+    "identity_released_cgroup_removed": true
+  },
+  "forged_bypass": {
+    "executor_raised": "GateBypassError: decision 'd5b304ea-f62e-476b-83b1-5ff3ec101c62' did not come from a real Gate -- effect refused",
+    "ground_truth_file_exists": false
+  },
+  "uid_cgroup_downgrade_replay": {
+    "executor_raised": "GateBypassError: decision 'b03160a1-da57-479f-a05a-c1e1df913b23' did not come from a real Gate -- effect refused",
+    "ground_truth_file_exists": false
+  }
+}
