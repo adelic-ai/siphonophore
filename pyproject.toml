@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "siphonophore-core"
+version = "0.1.0"
+description = "SDK for mediated, attributable agent harnesses -- Principal, Intent, Policy, Gate, Executor, Audit. No agent-framework dependency (DESIGN.md section 0)."
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["siphonophore_core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
