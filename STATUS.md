@@ -1,10 +1,9 @@
 # siphonophore -- status
 
-Built by an unattended session against `build-prompt.md`'s Phase 1 (orchestrator skeleton). Read
-`DESIGN.md` first for the full reasoning this implements; this file only records what got built,
-the one open design call, and what's left for a human to validate on real Linux. (Phase 2, if it
-lands, gets its own section appended below in a follow-up commit -- see build-prompt.md's
-"only if that lands clean with time to spare".)
+Built by an unattended session against `build-prompt.md`'s Phase 1 (orchestrator skeleton) and
+Phase 2 (substrate interface, no implementation). Read `DESIGN.md` first for the full reasoning
+this implements; this file only records what got built, the one open design call, and what's
+left for a human to validate on real Linux.
 
 ## What's built
 
@@ -23,6 +22,7 @@ lands, gets its own section appended below in a follow-up commit -- see build-pr
   `make_failing_agent`, `make_uid_reporting_agent`) usable both as plain test `Agent`s and as
   `SeveredRecipe.factory` references, since a severed node's recipe must be importable by
   reference, not a live object.
+- `siphonophore/substrate.py` -- Phase 2, interface only (see below).
 - `siphonophore/__init__.py` -- exports `Colony`, `SeveredRecipe`, and the orchestrator's own
   exception types.
 - `pyproject.toml` -- added `strands-agents>=1.53.0` as a real dependency; installed in this
@@ -75,6 +75,28 @@ though whether `AgentResult.to_dict()` *should* round-trip metrics is a question
 actually reaches out to the Strands maintainers, which build-prompt.md is explicit stays a human
 decision.
 
+## Phase 2: substrate interface, deliberately not wired into Phase 1's dispatch
+
+`siphonophore/substrate.py` defines `Substrate` (an abstract `spawn`/`collect`/`teardown`
+interface) and three implementations:
+
+- `ProcessSubstrate` -- real, functionally identical to what `Colony._dispatch_severed` already
+  does inline. Exists to prove the interface shape actually fits the one tier that's built.
+- `ContainerSubstrate`, `MicroVMSubstrate` -- honest stubs. Every method raises
+  `NotImplementedError` naming itself. Not built, per build-prompt.md's explicit instruction not
+  to build the container/microVM tiers yet -- same "explicitly out of scope, considered, not
+  built" discipline `warrant` used for real SPIRE deployment.
+
+Deliberate scope call, not an oversight: **`Colony._dispatch_severed` does NOT route through
+`Substrate`/`ProcessSubstrate`** -- it still does the bare-process work inline, exactly as Phase 1
+built and validated it. Routing Phase 1's already-green severed dispatch through this interface,
+for a single tier, with zero behavior change, would mean re-touching and re-validating tested code
+for no functional gain -- the actual point of pulling the interface out (letting a node pick its
+own substrate) only pays for itself once a second tier exists to choose between. Left for whoever
+builds `ContainerSubstrate` or `MicroVMSubstrate` for real: wire `Colony` through `Substrate` at
+the same time, validated once, together with an actual reason to abstract over more than one
+implementation.
+
 ## What still needs a human on real Linux, as root
 
 Everything that touches `identity.provision_identity` (real `useradd`, real cgroupfs) is untestable
@@ -94,11 +116,12 @@ were:
 What *was* validated for real, unprivileged, right here, and is worth naming explicitly since it's
 easy to undercount: non-severed dispatch (success and failure paths), all node-registration and
 recipe-resolution validation, `_await_checkin`'s real timeout enforcement (a real `CheckinServer`,
-a real deadline, no fabricated instant-return), and the full severed-runner pipeline minus the
-actual uid switch and cgroup (in-process call to `_severed_runner.main()`, and a real
+a real deadline, no fabricated instant-return), the full severed-runner pipeline minus the actual
+uid switch and cgroup (in-process call to `_severed_runner.main()`, and a real
 `python -m siphonophore._severed_runner` subprocess spawn -- both exercise real check-in client
-calls, real recipe resolution, real `Agent.stream_async`, and a real stdout round trip). The one
-thing genuinely untested anywhere in this session is the literal privilege drop
+calls, real recipe resolution, real `Agent.stream_async`, and a real stdout round trip), and
+`ProcessSubstrate`'s spawn/collect/teardown against a real (self-uid, not fabricated) `Identity`.
+The one thing genuinely untested anywhere in this session is the literal privilege drop
 (`user=<provisioned uid>`) succeeding against a uid that isn't the caller's own, plus
 `identity.provision_identity`/`add_pid_to_cgroup` themselves -- both already validated in the
 prior session per `build-prompt.md`'s own account (10/10 on colima as root), just not re-proven
@@ -113,7 +136,8 @@ success. See `test_severed_dispatch_without_real_privilege_fails_cleanly_as_that
 
 ## Test status at last commit
 
-37 collected (identity: 6, checkin: 5, orchestrator: 23, severed_runner: 3). 27 pass, 10 correctly
+42 collected (identity: 6, checkin: 5, orchestrator: 23, severed_runner: 3, substrate: 5 --
+4 test functions, one parametrized across both unbuilt substrate tiers). 32 pass, 10 correctly
 skipped (8 pre-existing identity/checkin skips + the 2 new `linux_root_only` severed-dispatch
 tests; none faked, none silently xfail'd). Re-run: `./.venv/bin/python -m pytest -v` from the repo
 root.
@@ -125,7 +149,7 @@ root.
 - Whether `AgentResult.to_dict()` should itself round-trip metrics is worth raising with the
   Strands maintainers per DESIGN.md's "legitimate scoped upstream contribution" framing -- not
   initiated here; stays a human decision per build-prompt.md.
-- Phase 2 (substrate-selection interface) -- not started yet in this commit; see build-prompt.md
-  for scope if a follow-up session takes it on.
+- `ContainerSubstrate`/`MicroVMSubstrate` real implementations, and wiring `Colony` through
+  `Substrate` generally -- separately scoped, per build-prompt.md's explicit instruction.
 - The org/firm layer above the individual principal, and actually reaching out to Strands
   maintainers -- both explicitly out of scope for this prompt, untouched.
