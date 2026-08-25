@@ -6,12 +6,14 @@ not a framework for building agents faster, a framework for making it structural
 an agent's actions to escape attribution. See `HISTORY.md` for how this design was arrived at and
 what's been learned building toward it; this document states only the design itself.
 
-## §0 — No dependency on any existing agent SDK
+## §0 — Study Strands, don't depend on Strands
 
-`siphonophore-core` and `siphonophore-harness` depend on nothing beyond the standard library and
-whatever a specific execution backend genuinely requires (e.g. real OS primitives for a uid+cgroup
-executor). No agent-framework dependency of any kind — not as a runtime dependency, and not by
-reusing code, even code this project wrote itself, from outside `siphonophore-core`'s own tree.
+Not a blanket zero-dependencies rule — a dependency is fine when there's a specific reason a
+first-party implementation would be worse and the dependency itself is mature. What's not
+negotiable: no dependency on Strands, or reuse of code from this project's own prior architecture
+(even code with no external imports of its own) — either way, that means trusting someone else's
+agent-execution machinery, or this project's own discarded assumptions, in a place where the whole
+point is not trusting things by default.
 
 The cognitive loop (prompt → completion → parse intent → feed result back) is owned, minimal, and
 built as part of `siphonophore-harness` itself. Depending on an external agent SDK for this would
