@@ -1,0 +1,36 @@
+{
+  "workdir": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-002-ix53xj_m",
+  "predicate_a_mediated_delegation": {
+    "delegate_decision_permitted": true,
+    "delegate_effect": {
+      "effect": "delegate",
+      "delegator_principal_id": "principal-alice",
+      "sub_intent_id": "35986ebf-381e-4f50-bbba-d81dffc5309d",
+      "sub_effect": {
+        "effect": "write_file",
+        "path": "/var/folders/hh/gpjt0kf155188z_jh20hk_m00000gp/T/sipho-002-ix53xj_m/sub_agent_effect.txt",
+        "principal_id": "principal-alice.sub-agent-1"
+      }
+    },
+    "sub_file_exists": true,
+    "sub_file_content_matches": true,
+    "sub_effect_attributed_to_subagent": true
+  },
+  "predicate_b_forged_delegate_refused": {
+    "refused": true,
+    "forged_sub_file_absent": true
+  },
+  "predicate_c_kind_binding": {
+    "relabel_case": {
+      "description": "write_file token reused verbatim to authorize a delegate Decision",
+      "gate_verify_result": false,
+      "executor_refused": true
+    },
+    "mutation_case": {
+      "description": "delegate Decision's kind field mutated in place to write_file, token unchanged",
+      "gate_verify_result": false,
+      "executor_refused": true
+    },
+    "relabel_target_file_absent": true
+  }
+}

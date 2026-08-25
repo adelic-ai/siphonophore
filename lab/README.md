@@ -16,6 +16,7 @@ was violated, and why the fix was deletion rather than a cleaner import).
 | # | Date | Title | Headline finding |
 |---|---|---|---|
 | 001 | 2026-08-25 | [Gate blocks unmediated effects](001-gate-blocks-unmediated-effects.md) | Hypothesis **supported** (6/6 predicates). Minimal `Intent -> Gate.submit() -> Decision -> Executor.execute()` pipeline: a mediated write's on-disk content is confirmed by reading the file back; two independent Decision-forgery strategies (made-up token, attacker's own HMAC secret) are both refused by `Executor.execute()`'s own verification, with the target file confirmed absent. Named an open trust boundary: payload fields are not yet bound into the token, only `intent_id`/`principal_id`/`kind`/`permitted` are. |
+| 002 | 2026-08-25 | [Delegation through the same gate](002-delegation-through-the-same-gate.md) | Hypothesis **supported** (3/3 predicates, 11/11 checks). `delegate` added as a second `Intent.kind`; `Executor.execute()` handles it by constructing a *new* Intent for the sub-agent's own effect and submitting it through the same Gate — no shortcut. Sub-agent's effect confirmed on disk, attributed to its own `principal_id`. Forged delegate Decision refused. `kind` was bound into the HMAC from the first line this time; both a token-reuse relabel and an in-place `kind` mutation on a genuine Decision correctly failed `Gate.verify()` and were refused — the exact gap HISTORY.md describes finding only after the fact, this time built in from the start. |
 
 ## Conventions
 
