@@ -1,13 +1,16 @@
 # siphonophore — an SDK for mediated, attributable agent harnesses
 
-v1 (archived: `archive/v1-mediation-orchestrator/`, tag `archive/v1-mediation-orchestrator`) built a
-`MultiAgentBase` orchestrator that sat alongside Strands, giving *severed* sub-agents real OS
-identity while everything else stayed exactly as Strands already worked. It was real and validated
-on colima. It was also answering a narrower question than the one that matters: "how do we retrofit
-process isolation onto Strands' existing extension point," not "what does an agent harness look
-like if it's designed for attribution and audit from the start." This document is the second
-question, revised twice since v1: once to generalize from "orchestrator" to "SDK" (§0), once to drop
-Strands as a dependency entirely, keeping it only as a design reference to study, not import (§0).
+v1 built a `MultiAgentBase` orchestrator that sat alongside Strands, giving *severed* sub-agents
+real OS identity while everything else stayed exactly as Strands already worked. It was real and
+validated on colima. It was also answering a narrower question than the one that matters: "how do
+we retrofit process isolation onto Strands' existing extension point," not "what does an agent
+harness look like if it's designed for attribution and audit from the start." This document is the
+second question, revised three times since v1: once to generalize from "orchestrator" to "SDK"
+(§0), once to drop Strands as a dependency entirely (§0), and once more (2026-08-25) to actually
+delete v1's code rather than keep it archived — reusing even a dependency-free file from it (the
+tag `archive/v1-mediation-orchestrator` still marks the deleted commit in git history) turned out
+to violate the no-dependencies principle in practice, not just risk violating it in theory: `siphonophore`
+stands alone, which means no code from the old architecture either, not just no `strands` package.
 
 ## §0 — Study Strands, don't depend on Strands
 
@@ -212,8 +215,10 @@ not just asserted. Formalize into the public SDK API only after that.
 
 ## Status
 
-Design only. v1's code is archived, not deleted — its OS-level primitives (uid+cgroup provisioning,
-the check-in protocol) are real, validated raw material this design expects to reuse inside the
-Executor layer (§2, §6). What changed across both revisions is everything above the primitives:
-first from a delegation-specific orchestrator to a uniform gate, then from "built alongside Strands"
-to "no Strands dependency anywhere in core or the default harness."
+Design only, and building bottom-up via `lab/` (see `lab/README.md`) — three portable experiments
+supported so far (mediation blocks unmediated effects; delegation reduces to the same primitive;
+execution class is real and enforced, not a label). v1's code is deleted, not archived — reusing
+even its dependency-free primitives (uid+cgroup provisioning, the check-in protocol) turned out to
+still be a dependency on the discarded architecture in practice, not just a risk in theory. A real
+uid+cgroup execution class is still a valid next experiment; it has to be built fresh and
+self-contained like the others, not imported from what was set aside.
