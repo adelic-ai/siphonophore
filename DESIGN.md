@@ -253,3 +253,9 @@ about itself at startup. Which of these it actually is has not been decided here
   remains open.
 - Whether broker-integrity attestation is a platform-measurement concern or a supply-chain/
   deployment-time concern — §8 names the question without answering it.
+- §3's check-in protocol and reconciliation are validated as freestanding primitives (`identity`,
+  `audit`) but not yet wired into any `execution` backend's dispatch path: a `uid_cgroup` delegation
+  today is trusted the instant it is spawned, not gated by check-in, and reconciliation runs only
+  when a caller explicitly invokes it, not automatically after a delegation completes. Whether that
+  integration belongs inside `Executor`/`Broker` itself, or stays a mechanism a harness wires up
+  deliberately per delegation, is undecided.

@@ -125,3 +125,60 @@ later cleared from the repository, but the findings are real and worth keeping:
   violation described above. The finding that stands: uid+cgroup as a third execution class is
   buildable and testable with the same methodology as the first three experiments; it needs
   rebuilding without depending on anything outside `siphonophore-core`'s own tree.
+
+## lab/001–009, and formalizing them into siphonophore-core + siphonophore-harness
+
+The four retracted experiments above were rebuilt hands-off (dispatched to background agents,
+each independently verified afterward rather than trusted on its own report) as `lab/001`–`009`,
+this time inside `lab/`'s own stated charter: every script self-contained, stdlib-only, no
+dependency on any other file in the repo (`lab/README.md`). Nine experiments, each real-substrate
+validated where the claim required it (004–007, 009 actually run as root on colima; 001–003, 008
+portable): Gate/Decision binding for `kind`, `execution_class`, and (008/009) `artifact_digest`;
+uid+cgroup as a real execution class with clean teardown on every exit path (004, then 005/006
+adding a nonce+`SO_PEERCRED` check-in protocol first as a dedicated socket per delegation, then as
+one shared listener under genuine concurrency); the first real implementation of §3's Belnap
+four-valued reconciliation, exercised against a sub-agent that actually lies (007); execution
+provenance as an artifact-digest binding, combined with uid+cgroup (008/009).
+
+Once nine independently-proven experiments existed, `siphonophore-core` was built as the real,
+importable, permanently-tested package consolidating them — not a tenth copy of the same shapes,
+one formalization pass per lab-proven primitive, each its own `feat/<module>` branch merged to
+`main` once its test suite (portable + `linux_root_only`, the latter run for real on colima) was
+green: `intent`/`policy`/`mediation` (Intent, Decision, Gate) first; then `execution` +
+`execution_uid_cgroup` (`Executor`, the three execution-class backends); then `identity`
+(`CheckinRegistry`/`CheckinListener`, lab/005+006's check-in protocol); then `audit`
+(`reconcile()`/`reconcile_path()`, lab/007's Belnap logic). `siphonophore-harness` followed as a
+fifth pass — the "minimal native cognitive loop" §6 requires — built on top of the now-formalized
+core rather than as a tenth lab experiment: `Model`/`ScriptedModel`, `parse_intent` (the only place
+untrusted completion text becomes an `Intent`, never a `Decision`), `Broker` (the only
+Effect-producing capability a `CognitiveLoop` is given), and `CognitiveLoop` itself.
+
+**§7's proof — the cognitive loop structurally unable to produce an effect except through the
+Gate, and delegation reducing to the exact same primitive a tool call does — is demonstrated by
+this formalization, not merely asserted.** `test_harness_structural_proof.py` enforces the first
+half by static analysis (AST-parsing `loop.py`/`intent_parsing.py`/`model.py`/`broker.py` for a
+blocklist of effect-producing stdlib imports, and asserting `CognitiveLoop.__init__` accepts
+nothing but a model, a broker, and a principal id) rather than trusting a docstring's claim.
+`test_harness_broker.py` and `test_harness_loop_linux.py` prove the second half twice: portably (a
+`"delegate"`-kind intent and a `"run_artifact"`-kind intent both landing on `same_process` through
+the identical `Broker.dispatch()` call) and for real on colima (both landing on `uid_cgroup`, real
+distinct provisioned uids, real privilege drop, zero special-casing for `"delegate"` anywhere in
+`loop.py`, `broker.py`, or `execution.py`). One real, if minor, finding along the way: a first
+draft of the real-delegation test asserted the two dispatches would get *different* provisioned
+uids, which is false for sequential (non-concurrent) calls — the second dispatch legitimately reuses
+the first's now-released uid number. Fixed before merge; concurrent-identity separation is already
+covered elsewhere (`test_execution_uid_cgroup.py`, `test_identity_linux.py`), so nothing was lost
+by removing the wrong assertion.
+
+**An honest gap, not yet closed:** `identity.py` and `audit.py` are validated, freestanding
+primitives — proven against real delegated sub-agents on colima — but neither is wired into any
+`Executor` backend's actual dispatch path. `UidCgroupBackend` today trusts a spawned process the
+instant it's spawned (lab/004's original, simpler model), not gated by check-in the way lab/005's
+delegation-specific executor was; `reconcile_path()` is a utility a caller invokes explicitly, not
+something `Broker.dispatch()` runs automatically after a delegation. Per §6 step 4 ("discover which
+abstractions were wrong") this isn't a discovered flaw so much as an explicit boundary — DESIGN.md
+§6's own module sketch keeps `identity`/`audit` separate from `execution` — but it means "a
+delegation is trusted only after check-in" and "a delegation's self-report is automatically
+reconciled against ground truth" are both still aspirational for the formalized package, proven
+only in isolation (lab/005/006 and lab/007, and now identity.py/audit.py's own real-Linux tests),
+not yet as an integrated flow.
