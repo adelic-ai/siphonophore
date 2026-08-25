@@ -237,7 +237,16 @@ about itself at startup. Which of these it actually is has not been decided here
   candidate, not a decision.
 - Whether §3's four-valued reconciliation, once genuinely exercised across contradiction and
   unreported-activity cases (not just the corroborated case), needs a richer comparison than plain
-  equality — e.g. partial matches, or claims that are ambiguous rather than cleanly true/false.
+  equality — e.g. partial matches, or claims that are ambiguous rather than cleanly true/false. A
+  sharper version of the same question: reconciliation today compares exactly two booleans
+  (claimed, observed), but a checked-in execution actually produces three independent signals —
+  whether identity was established (check-in), whether a claim was made (self-report), and whether
+  an effect was observed (ground truth). Collapsing "identity failed but an effect was still
+  observed" into the same four-valued space as "identity held but the claim was false" may be
+  losing a real distinction, not yet exercised because no current backend can produce that case
+  (§2's `uid_cgroup_checkin` gates its own artifact code on check-in success, so an unattributed
+  observed effect cannot currently occur through it — see the `uid_cgroup_checkin` bullet below for
+  why that guarantee is specific to this one backend's wrapper, not architectural).
 - An org/firm layer above an individual human Principal — delegation chains today only reach a
   single human principal, with no representation of an organization the principal belongs to.
 - Whether "same process" should ever be a default execution class, or whether §2's policy should
@@ -256,7 +265,20 @@ about itself at startup. Which of these it actually is has not been decided here
 - §3's check-in protocol and reconciliation are now wired into one execution backend
   (`uid_cgroup_checkin`, alongside the still-unchecked `uid_cgroup`) rather than staying
   freestanding primitives — but only there: a same_process or separate_process delegation has no
-  check-in-gated or automatically-reconciled equivalent, and nothing decides *which* consequence
-  level should route to the checked-in tier by default versus leaving that to whoever configures a
-  `Policy`. Whether check-in-gated trust should eventually be the default for any delegation, not
-  an opt-in tier a caller has to choose, is undecided.
+  check-in-gated or automatically-reconciled equivalent. The open question is sharper than "should
+  check-in be the default for delegation": execution substrate (§2: same_process | separate_process
+  | uid+cgroup | container | VM) and required assurance (unverified | process-identified |
+  checked-in | reconciled | externally-observed, per §5) are plausibly two orthogonal axes that
+  `uid_cgroup_checkin` currently conflates into one execution-class name. Naming an assurance level
+  on `Decision` independently of execution class (rather than one execution-class string per
+  substrate×assurance combination) would generalize cleanly, but is not justified yet by only two
+  execution classes carrying any assurance variation — worth deferring until a third combination
+  actually needs it, not building ahead of that pressure.
+- `uid_cgroup_checkin`'s guarantee that a check-in failure cannot co-occur with an
+  already-performed artifact effect is a property of its own wrapper (`_CHECKIN_CHILD_WRAPPER` gates
+  `intent.artifact_code` on `perform_checkin()` succeeding first), not something the architecture
+  enforces for every possible checked-in backend. A differently-shaped backend (e.g. one that
+  starts the artifact concurrently with check-in for latency reasons) could produce a real,
+  observed effect with a failed identity binding — `CheckinFailedError` already carries its
+  `observations` for exactly this reason, but nothing today distinguishes "nothing happened" from
+  "something happened, attribution is invalid" at the type level.
