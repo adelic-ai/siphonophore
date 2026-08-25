@@ -1,0 +1,77 @@
+{
+  "workdir": "/tmp/sipho-007-qlohwcll",
+  "broker_pid": 8508,
+  "broker_uid": 0,
+  "predicate_a_truth_table": {
+    "TT": "corroborated",
+    "TF": "contradiction",
+    "FT": "unreported_activity",
+    "FF": "no_evidence"
+  },
+  "predicate_b_real_delegation": {
+    "provisioned_uid": 65100,
+    "broker_uid": 0,
+    "provisioned_uid_differs_from_broker": true,
+    "real_uid_from_proc_status_matches_provisioned": true,
+    "child_confirmed_exited_before_ground_truth_read": true,
+    "child_returncode": 0,
+    "self_report": {
+      "principal_id": "sub-agent",
+      "claims": [
+        {
+          "path": "corroborated.txt",
+          "content": "this write really happened and matches the claim"
+        },
+        {
+          "path": "contradicted.txt",
+          "content": "a claimed content that is simply not true"
+        }
+      ]
+    },
+    "ground_truth": {
+      "corroborated.txt": "this write really happened and matches the claim",
+      "unreported.txt": "a real effect that happened but was never self-reported",
+      "contradicted.txt": "the real content, which differs from what the self-report is about to claim"
+    },
+    "reconciled": {
+      "corroborated": {
+        "path": "corroborated.txt",
+        "claimed": true,
+        "observed": true,
+        "value": "corroborated",
+        "self_reported_content": "this write really happened and matches the claim",
+        "ground_truth_content": "this write really happened and matches the claim"
+      },
+      "contradicted": {
+        "path": "contradicted.txt",
+        "claimed": true,
+        "observed": false,
+        "value": "contradiction",
+        "self_reported_content": "a claimed content that is simply not true",
+        "ground_truth_content": "the real content, which differs from what the self-report is about to claim"
+      },
+      "unreported": {
+        "path": "unreported.txt",
+        "claimed": false,
+        "observed": true,
+        "value": "unreported_activity",
+        "self_reported_content": null,
+        "ground_truth_content": "a real effect that happened but was never self-reported"
+      },
+      "never": {
+        "path": "never.txt",
+        "claimed": false,
+        "observed": false,
+        "value": "no_evidence",
+        "self_reported_content": null,
+        "ground_truth_content": null
+      }
+    },
+    "cgroup_released": true,
+    "user_released": true
+  },
+  "predicate_c_forged_refused": {
+    "refused": true,
+    "no_new_users_provisioned": true
+  }
+}
