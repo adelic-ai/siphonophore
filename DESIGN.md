@@ -183,42 +183,70 @@ through the Gate.** A second intent shape — delegation — must then be demons
 exact same primitive a tool call does, not a separately-mediated mechanism. Only after both are
 demonstrated, not merely asserted, does any of this get formalized into a public SDK API.
 
-## §8 — Node attestation is a separate, lower layer than execution identity
+## §8 — Platform attestation is a separate, lower layer than execution identity
 
 Everything in §2 and §3 — a provisioned uid, a cgroup, a check-in protocol verified by the kernel —
 only means anything if the kernel doing the verifying is itself trustworthy. Those mechanisms
-establish *which process, on this host, did this* on a given occasion. They cannot establish *this
-host itself hasn't been tampered with* — a compromised kernel can lie about uids, cgroup membership,
-and `SO_PEERCRED` just as easily as a compromised agent can lie about what it did. This is a
-different question, at a different granularity, and must not be conflated with per-execution
-identity.
+establish *which process, on this host, did this* on a given occasion. They cannot establish
+anything about the host itself — a compromised kernel can lie about uids, cgroup membership, and
+`SO_PEERCRED` just as easily as a compromised agent can lie about what it did. This is a different
+question, at a different granularity, and must not be conflated with per-execution identity.
 
-Node attestation answers it once, not per-intent: at broker startup, not at every Decision. A
-hardware root of trust (a TPM quote — PCR values from the measured boot chain, signed over a fresh
-nonce, verified against the TPM's own certificate chain) establishes that the specific kernel and
-boot image now running is the one expected, before the broker trusts anything that kernel itself
-later reports about a process running on top of it. Everything §2 and §3 provide is only as strong
-as this foundation; without it, they are real, kernel-enforced facts about a kernel that has itself
-never been independently verified.
+Platform attestation answers it once, not per-intent: at broker startup, not at every Decision. A
+hardware root of trust (a TPM quote) establishes independently verifiable evidence about the node's
+identity and its measured state at the moment of the quote — signed PCR values, bound to a fresh
+nonce so the evidence can't be replayed from an earlier boot. Stated precisely, because a quote is
+easy to overclaim: it proves possession of a platform-bound key and the freshness and integrity of
+the *specific measurements taken*, not that "the host hasn't been tampered with" in any general
+sense. What those measurements actually cover — firmware and boot chain at minimum; the broker's own
+binary and configuration only if something extends measurement that far (an IMA-style scheme, or
+equivalent) — determines what the evidence is actually evidence *of*. Per-execution identity (§2)
+and check-in (§3) then bind individual mediated executions to whatever platform context was
+established this way; they are only as strong as what that evidence actually covers, not
+automatically as strong as "the whole host is clean."
 
-The attestor that performs this check is a customizable mechanism, not a hard requirement baked
-into every conformant harness (§6) — TPM hardware is not universal, and a harness running where none
-exists cannot attest what isn't there. What is required: when a harness does claim node attestation,
-it must be structurally impossible for a per-execution identity (§2) to be granted, or a check-in
-(§3) to be trusted, without that host having already passed attestation for the current boot — node
-attestation is the base of the trust chain the rest of this design stands on, never a parallel,
-optional check running alongside it.
+**Execution provenance is a distinct concern from platform attestation, sitting between it and §2's
+runtime identity, and deserves to be treated as its own extension of §2 rather than folded into
+either neighbor.** A provisioned uid and cgroup identify *which running process* is being observed;
+they say nothing about whether that process is running the code the broker actually meant to
+authorize. Where the Gate's dispatch selects an execution class (§2), it should also carry an
+artifact identity — a content digest of the code/recipe being executed, not just an import path or
+task-type label — so that what got authorized and what actually ran can be compared, the same
+binding discipline §2 already requires for every other dispatch-relevant field.
+
+The attestor that performs platform attestation is a customizable mechanism, not a hard requirement
+baked into every conformant harness (§6) — TPM hardware is not universal, and a harness running
+where none exists cannot attest what isn't there. What is required: when a harness does claim
+platform attestation, it must be structurally impossible for a per-execution identity (§2) to be
+granted, or a check-in (§3) to be trusted, without that host having already passed attestation for
+the current boot — platform attestation is the base of the trust chain the rest of this design
+stands on, never a parallel, optional check running alongside it.
+
+**Left genuinely open, not resolved by this section: who attests the broker's own integrity.**
+Platform attestation covers the node; §2's proposed execution provenance covers what the broker
+chooses to run; neither covers whether the broker binary and configuration doing the choosing is
+itself the expected one. That may collapse into platform measurement (if measurement is extended to
+cover the broker, it becomes part of establishing the node's state, not a separate step) or it may
+be a supply-chain/deployment-time concern (code signing, reproducible builds) outside the runtime
+attestation chain entirely, resolved before the broker ever starts rather than by anything it checks
+about itself at startup. Which of these it actually is has not been decided here.
 
 ## Explicitly open, not yet resolved
 
 - The gate↔cognitive-loop protocol (MCP-native vs. something narrower) — §1 names it as a
   candidate, not a decision.
-- The reconciliation logic that actually implements §3's four-valued comparison.
+- Whether §3's four-valued reconciliation, once genuinely exercised across contradiction and
+  unreported-activity cases (not just the corroborated case), needs a richer comparison than plain
+  equality — e.g. partial matches, or claims that are ambiguous rather than cleanly true/false.
 - An org/firm layer above an individual human Principal — delegation chains today only reach a
   single human principal, with no representation of an organization the principal belongs to.
 - Whether "same process" should ever be a default execution class, or whether §2's policy should
   require an explicit, justified exception to stay in-process rather than treating it as a default.
-- §8's node attestation is undesigned below the level stated: no attestor implementation exists,
-  and the exact mechanics (which TPM tooling, how a quote's PCR values map to "expected," how a
-  harness without TPM hardware degrades — refuses to start, or runs with attestation explicitly
-  disclosed as absent rather than silently skipped) are all unresolved.
+- §8's platform attestation is undesigned below the level stated: no attestor implementation
+  exists, and the exact mechanics (which TPM tooling, how a quote's PCR values map to "expected,"
+  how a harness without TPM hardware degrades — refuses to start, or runs with attestation
+  explicitly disclosed as absent rather than silently skipped) are all unresolved.
+- §8's execution provenance (an artifact digest bound alongside execution class) is stated as a
+  requirement, not yet implemented anywhere, including in the five lab experiments already built.
+- Whether broker-integrity attestation is a platform-measurement concern or a supply-chain/
+  deployment-time concern — §8 names the question without answering it.
