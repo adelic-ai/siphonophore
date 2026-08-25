@@ -97,21 +97,32 @@ builds `ContainerSubstrate` or `MicroVMSubstrate` for real: wire `Colony` throug
 the same time, validated once, together with an actual reason to abstract over more than one
 implementation.
 
-## What still needs a human on real Linux, as root
+## Validated on real Linux, as root (2026-08-24, colima) -- a real bug was found and fixed here
 
-Everything that touches `identity.provision_identity` (real `useradd`, real cgroupfs) is untestable
-in this environment (macOS, unprivileged) and was NOT faked, mocked, or claimed working. Written,
-wired end to end, and marked `linux_root_only` (same pattern as `test_identity.py`/
-`test_checkin.py`), left for a human to run on colima the way the two existing primitives already
-were:
+Both `linux_root_only` severed-dispatch integration tests were run for real on colima as root, the
+same way `identity.py`/`checkin.py` were validated before this orchestrator was built on top of
+them. The first run genuinely failed -- this is exactly the case for not letting an unattended,
+unprivileged session claim this path works:
 
-- `tests/test_orchestrator.py::test_severed_node_dispatch_runs_under_the_provisioned_uid_end_to_end`
-  -- the actual proof of the whole severed pipeline: a severed node reports its own `os.getuid()`
-  back, asserted to land in the reserved node range (`identity.NODE_UID_MIN`-`NODE_UID_MAX`) and
-  to differ from the broker's own uid.
-- `tests/test_orchestrator.py::test_severed_node_that_never_checks_in_times_out_and_is_reported_failed`
-  -- a real severed spawn against an absurdly short `checkin_timeout`, proving `CheckinTimeoutError`
-  actually fires and is reported as that node's own failure, not a hang.
+`test_severed_node_dispatch_runs_under_the_provisioned_uid_end_to_end` failed with a real
+`CheckinTimeoutError`. Root cause, found by reproducing directly and reading the child's actual
+stderr (which the orchestrator's own timeout path doesn't surface, since it kills the process
+before `communicate()`): `CheckinServer.start()`'s `socket.bind()` creates the check-in socket with
+the broker's own umask permissions (0755) -- a freshly provisioned node's uid is neither the
+socket's owner nor in its owning group, so it has no write permission on the socket file, and
+`AF_UNIX` `connect()` requires write permission on the target. Every severed node's check-in was
+silently, permanently unable to reach the broker at all; it would have timed out identically in a
+real deployment, not just in the test.
+
+Fixed in `checkin.py`: `os.chmod(socket_path, 0o777)` after bind. This does not weaken
+verification -- `_handle`'s nonce + `SO_PEERCRED`-verified-uid check is the actual security
+boundary and silently drops any connection that doesn't match both, regardless of how it reached
+`accept()`. Re-ran after the fix: the severed node's own reported uid was `59000`, inside the
+reserved range and distinct from the broker's own (root's) uid -- the real, unambiguous proof the
+child process actually ran as the provisioned identity. **40/40 tests pass on colima as root now**
+(was 39 passed / 1 failed / 2 skipped before the fix); 2 correctly skip there (the
+without-real-privilege test, which needs to run *without* root to prove that path, and the
+non-Linux `SO_PEERCRED` test).
 
 What *was* validated for real, unprivileged, right here, and is worth naming explicitly since it's
 easy to undercount: non-severed dispatch (success and failure paths), all node-registration and
@@ -137,15 +148,14 @@ success. See `test_severed_dispatch_without_real_privilege_fails_cleanly_as_that
 ## Test status at last commit
 
 42 collected (identity: 6, checkin: 5, orchestrator: 23, severed_runner: 3, substrate: 5 --
-4 test functions, one parametrized across both unbuilt substrate tiers). 32 pass, 10 correctly
-skipped (8 pre-existing identity/checkin skips + the 2 new `linux_root_only` severed-dispatch
-tests; none faked, none silently xfail'd). Re-run: `./.venv/bin/python -m pytest -v` from the repo
-root.
+4 test functions, one parametrized across both unbuilt substrate tiers). On the Mac (unprivileged,
+macOS): 32 pass, 10 correctly skipped. On colima (real Linux, real root): 40 pass, 2 correctly
+skipped -- see the validation section above for the one real bug that run found and the fix.
+None faked, none silently xfail'd, on either platform. Re-run: `./.venv/bin/python -m pytest -v`
+from the repo root (Mac), or as root on a real Linux host for the full suite.
 
 ## Explicitly left incomplete / for a human
 
-- The two `linux_root_only` severed-dispatch integration tests above -- run on colima as root,
-  same as the prior session's identity/checkin validation.
 - Whether `AgentResult.to_dict()` should itself round-trip metrics is worth raising with the
   Strands maintainers per DESIGN.md's "legitimate scoped upstream contribution" framing -- not
   initiated here; stays a human decision per build-prompt.md.
