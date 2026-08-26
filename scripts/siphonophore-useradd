@@ -1,0 +1,39 @@
+#!/bin/sh
+# siphonophore-core privilege-separation helper -- the ONLY thing this script does is validate its
+# two arguments strictly, then call the real useradd with fixed, hardcoded flags. Nothing about
+# the flags is configurable by the caller -- that's the point. Granted via a scoped sudoers entry
+# (see ../DESIGN.md / scripts/siphonophore-sudoers.template) so the siphonophore broker process
+# itself never needs to be root; this is the one narrow thing that does.
+set -eu
+
+UID_MIN=60000
+UID_MAX=65535
+USERNAME_RE='^sipho-core-[A-Za-z0-9_-]{1,32}$'
+
+if [ "$#" -ne 2 ]; then
+    echo "usage: siphonophore-useradd <uid> <username>" >&2
+    exit 2
+fi
+
+TARGET_UID="$1"
+TARGET_USERNAME="$2"
+
+case "$TARGET_UID" in
+    ''|*[!0-9]*)
+        echo "refused: uid must be a plain positive integer, got '$TARGET_UID'" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$TARGET_UID" -lt "$UID_MIN" ] || [ "$TARGET_UID" -gt "$UID_MAX" ]; then
+    echo "refused: uid $TARGET_UID outside the allowed range [$UID_MIN, $UID_MAX]" >&2
+    exit 2
+fi
+
+if ! printf '%s' "$TARGET_USERNAME" | grep -Eq "$USERNAME_RE"; then
+    echo "refused: username '$TARGET_USERNAME' does not match required pattern $USERNAME_RE" >&2
+    exit 2
+fi
+
+exec useradd --no-create-home --shell /usr/sbin/nologin --uid "$TARGET_UID" \
+    --comment "siphonophore-core ephemeral execution identity" "$TARGET_USERNAME"

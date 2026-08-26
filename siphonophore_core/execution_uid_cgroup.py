@@ -57,13 +57,40 @@ def _find_free_uid(uid_min: int, uid_max: int) -> int:
     raise ProvisioningError(f"no free uid in reserved range [{uid_min}, {uid_max}]")
 
 
+# Privilege separation for useradd/userdel specifically (see scripts/README.md and DESIGN.md's
+# "Explicitly open" section for the fuller picture -- this closes one of three pieces, not the
+# whole broker-root-privilege gap; the preexec_fn privilege-drop step below still needs the
+# calling process to already be root regardless of this). These two calls no longer assume "I am
+# root, call useradd directly" -- they go through a tiny, self-validating wrapper script
+# (scripts/siphonophore-useradd, scripts/siphonophore-userdel), elevated via a scoped `sudo -n`
+# only when not already root, mirroring warden/privilege.py's own elevation_prefix() exactly.
+_USERADD_HELPER_ENV = "SIPHONOPHORE_USERADD_HELPER"
+_USERDEL_HELPER_ENV = "SIPHONOPHORE_USERDEL_HELPER"
+_DEFAULT_SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+
+
+def _useradd_helper_path() -> str:
+    return os.environ.get(_USERADD_HELPER_ENV) or str(_DEFAULT_SCRIPTS_DIR / "siphonophore-useradd")
+
+
+def _userdel_helper_path() -> str:
+    return os.environ.get(_USERDEL_HELPER_ENV) or str(_DEFAULT_SCRIPTS_DIR / "siphonophore-userdel")
+
+
+def _elevation_prefix() -> tuple[str, ...]:
+    """`("sudo", "-n")` when not already root, `()` when already root -- so a broker that
+    legitimately runs as root (a nested/CI context, or today's real-root colima test runs) skips
+    elevation entirely rather than depending on a sudo grant it doesn't need. `-n`: never prompt --
+    a hands-off broker blocking on a password is a silent hang, not a useful failure."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return ()
+    return ("sudo", "-n")
+
+
 def provision_ephemeral_user(execution_id: str, uid_min: int, uid_max: int) -> tuple[str, int, int]:
     uid = _find_free_uid(uid_min, uid_max)
     username = f"sipho-core-{execution_id[:8]}"
-    result = _run([
-        "useradd", "--no-create-home", "--shell", "/usr/sbin/nologin", "--uid", str(uid),
-        "--comment", "siphonophore-core ephemeral execution identity", username,
-    ])
+    result = _run([*_elevation_prefix(), _useradd_helper_path(), str(uid), username])
     if result.returncode != 0:
         raise ProvisioningError(f"useradd failed (rc={result.returncode}): {result.stderr.strip()}")
     entry = pwd.getpwnam(username)
@@ -73,7 +100,7 @@ def provision_ephemeral_user(execution_id: str, uid_min: int, uid_max: int) -> t
 
 
 def release_ephemeral_user(username: str) -> None:
-    result = _run(["userdel", username])
+    result = _run([*_elevation_prefix(), _userdel_helper_path(), username])
     if result.returncode != 0:
         raise ProvisioningError(f"userdel failed (rc={result.returncode}): {result.stderr.strip()}")
 

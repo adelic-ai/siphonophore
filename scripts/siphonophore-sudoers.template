@@ -1,0 +1,26 @@
+# siphonophore-core -- scoped privilege-separation grant.
+#
+# Install (never edit /etc/sudoers.d/ files directly with a plain editor -- visudo validates
+# syntax before saving, a broken sudoers file can lock out sudo entirely):
+#
+#   sudo visudo -f /etc/sudoers.d/siphonophore-core
+#   # paste the Cmnd_Alias/grant lines below, with <BROKER_USER> and <REPO_PATH> replaced
+#
+# or, non-interactively (still validate afterward):
+#
+#   sudo cp scripts/siphonophore-sudoers.template /etc/sudoers.d/siphonophore-core
+#   sudo sed -i 's|<REPO_PATH>|/actual/path/to/siphonophore|; s|<BROKER_USER>|actualuser|' \
+#       /etc/sudoers.d/siphonophore-core
+#   sudo chmod 440 /etc/sudoers.d/siphonophore-core
+#   sudo visudo -c
+#
+# Grants NOPASSWD access to exactly the two helper scripts, nothing else -- deliberately not
+# "ALL", matching warden's own PART-B-POPOS-RUNBOOK.md section R2 pattern.
+#
+# Replace:
+#   <BROKER_USER>  the unprivileged user the siphonophore broker process actually runs as
+#   <REPO_PATH>    absolute path to this checkout (or wherever the two scripts are installed --
+#                  they don't have to live inside the repo, this is just the default layout)
+
+Cmnd_Alias SIPHONOPHORE_CORE = <REPO_PATH>/scripts/siphonophore-useradd, <REPO_PATH>/scripts/siphonophore-userdel
+<BROKER_USER> ALL=(root) NOPASSWD: SIPHONOPHORE_CORE

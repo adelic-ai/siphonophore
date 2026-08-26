@@ -1,0 +1,22 @@
+#!/bin/sh
+# siphonophore-core privilege-separation helper -- see siphonophore-useradd's own header. Validates
+# the username matches the exact convention provision_ephemeral_user() uses before ever calling the
+# real userdel, so this script cannot be used to delete an arbitrary account even if invoked with
+# unexpected arguments.
+set -eu
+
+USERNAME_RE='^sipho-core-[A-Za-z0-9_-]{1,32}$'
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: siphonophore-userdel <username>" >&2
+    exit 2
+fi
+
+TARGET_USERNAME="$1"
+
+if ! printf '%s' "$TARGET_USERNAME" | grep -Eq "$USERNAME_RE"; then
+    echo "refused: username '$TARGET_USERNAME' does not match required pattern $USERNAME_RE" >&2
+    exit 2
+fi
+
+exec userdel "$TARGET_USERNAME"
