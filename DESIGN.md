@@ -285,3 +285,13 @@ about itself at startup. Which of these it actually is has not been decided here
   observed effect with a failed identity binding — `CheckinFailedError` already carries its
   `observations` for exactly this reason, but nothing today distinguishes "nothing happened" from
   "something happened, attribution is invalid" at the type level.
+- A broker process that wants both the `uid_cgroup`/`uid_cgroup_checkin` tiers and the portable
+  tiers available has to run entirely as root today — `useradd`, cgroup management, and the
+  `setuid` privilege drop all require it, and there is no separation between "the broker" and "the
+  specific privileged operations." `same_process`/`separate_process` now refuse outright rather
+  than silently inheriting that root (they raise unless a caller explicitly passes
+  `allow_root=True`), which closes the silent case, but does not solve the underlying one: nothing
+  yet lets a broker run genuinely unprivileged while still using the `uid_cgroup` tiers. That needs
+  real deployment-level work — cgroup v2 delegation (chown a subtree to the broker's own
+  unprivileged uid once, outside this code) plus a narrowly-scoped, `sudo`-mediated path for
+  `useradd`/`userdel` specifically — not a pure code change.

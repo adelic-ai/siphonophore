@@ -249,3 +249,24 @@ allowlist (`PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`) computed fresh per execut
 parent's environment filtered after the fact — validated for real on colima: a fake secret set in
 the broker's own environment is confirmed absent from a real spawned child's environment, for both
 backends, not merely asserted to be filtered.
+
+## The broker-root-privilege gap: same_process/separate_process inheriting whatever the broker has
+
+A question about whether agent-authored code is ever isolated from root surfaced a real gap:
+`same_process`/`separate_process` inherit whatever privilege the broker process itself runs with,
+with zero resistance — `same_process` does a bare `exec()` in the broker's own process. The broker
+has to run as real root for the `uid_cgroup`/`uid_cgroup_checkin` tiers to work at all (`useradd`,
+cgroup management, the `setuid` drop all require it), and `Executor` registers
+`same_process`/`separate_process` by default, unconditionally. So a broker wanting both kinds of
+tier available runs entirely as root — and nothing stopped a "low consequence" intent (the
+default, self-declared by the model, not independently verified) from running via `same_process`
+with that root broker's full privilege and zero isolation. The weakest isolation tier became the
+most dangerous the moment root entered the picture at all.
+
+Fixed the acute, silent part: `SameProcessBackend`/`SeparateProcessBackend` now refuse outright
+when the broker is euid 0, unless a caller explicitly passes `allow_root=True` — a silent privilege
+inheritance became a loud, impossible-to-miss configuration error. This does not solve the
+underlying problem — nothing yet lets one broker run the `uid_cgroup` tiers *and* stay genuinely
+unprivileged itself; that needs real deployment-level work (cgroup v2 delegation, a narrowly-scoped
+sudo-mediated path for `useradd`/`userdel`) outside what a pure code change can do. Named explicitly
+in DESIGN.md's open questions rather than left implied.
