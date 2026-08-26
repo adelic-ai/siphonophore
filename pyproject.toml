@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+anthropic = ["anthropic>=0.40"]
 
 [tool.setuptools.packages.find]
 include = ["siphonophore_core*", "siphonophore_harness*"]
