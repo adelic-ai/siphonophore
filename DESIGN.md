@@ -294,10 +294,12 @@ about itself at startup. Which of these it actually is has not been decided here
   already root (`scripts/README.md`), validated on colima with a genuinely unprivileged user and a
   real sudoers grant, not just reasoned through. Cgroup management needs only delegation (`chown` a
   subtree once, no code change) — documented, not yet exercised end-to-end with an unprivileged
-  broker. **Still fully open:** the `preexec_fn` privilege drop that spawns the artifact process
-  under its target uid still requires the *forking* process to already be root — no unprivileged
-  broker can perform that step itself yet. Needs either `sudo -u '#<uid>'` (letting sudo perform the
-  switch — sudoers' numeric-range runas syntax not yet verified to hold across a full uid range) or
-  Linux user namespaces (`unshare --user` + `newuidmap`/`newgidmap`). Until this closes, no broker
-  can run the `uid_cgroup` tiers while staying unprivileged itself, regardless of the other two
-  pieces being done.
+  broker. **Still fully open, but the interface is now pinned:** the `preexec_fn` privilege drop
+  that spawns the artifact process under its target uid still requires the *forking* process to
+  already be root — no unprivileged broker can perform that step itself yet.
+  `contracts/spawn_helper.md` (PINNED) freezes the interface for the narrowly-privileged helper
+  that will close this — an exact-argument-free `sudo` invocation, one multiplexed stdin stream
+  crossing that boundary, genuinely separate fds past it — but no implementation exists yet.
+  Nothing else should be built against that contract until it's been reviewed for any capability it
+  might accidentally grant the broker. Until this closes, no broker can run the `uid_cgroup` tiers
+  while staying unprivileged itself, regardless of the other two pieces being done.
