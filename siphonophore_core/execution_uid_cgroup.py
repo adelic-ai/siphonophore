@@ -109,6 +109,28 @@ def read_real_uid_from_proc(pid: int) -> int:
     raise ProvisioningError(f"no Uid: line in /proc/{pid}/status")
 
 
+# Environment variables safe to pass through to a spawned artifact by default -- deliberately NOT
+# the parent's full environment. subprocess.Popen() inherits everything from the parent when `env`
+# is omitted, which would hand a spawned artifact any secret the broker process itself holds (an
+# API key, say) despite running under a genuinely separate, unprivileged uid -- the exact bug shape
+# Elad Meged's "Trusted Enough to Run" (Black Hat USA 2026) documents in Gemini CLI: environment
+# sanitization applied at the application layer while the OS-level channel (there, plain
+# inheritance into a shared-PID-namespace child readable via /proc/<pid>/environ; here, plain
+# inheritance into this child directly) was never closed. The uid separation here is real -- a
+# genuinely different provisioned uid, confirmed via /proc/<pid>/status -- but until this fix, the
+# environment boundary was never built at all, only the identity boundary was.
+DEFAULT_CHILD_ENV_KEYS = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
+
+
+def default_child_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """A minimal, explicit-allowlist environment for a spawned artifact -- everything else in the
+    broker's own environment is absent by construction, not filtered after the fact. `source`
+    defaults to the real process environment; callers (tests, mainly) can pass an explicit dict so
+    behavior doesn't depend on whatever happens to be set on the machine running them."""
+    src = source if source is not None else os.environ
+    return {key: src[key] for key in DEFAULT_CHILD_ENV_KEYS if key in src}
+
+
 _CHILD_WRAPPER = """
 import json, os, sys, time
 payload_json, sync_fd = sys.argv[1], int(sys.argv[2])
@@ -123,10 +145,14 @@ class UidCgroupBackend(ExecutionBackend):
     multiple call sites (or future backends) don't collide on the same reserved range -- every lab
     experiment from 004 onward picked its own distinct range for exactly this reason."""
 
-    def __init__(self, uid_min: int = 60000, uid_max: int = 60999, cgroup_root: Path | None = None) -> None:
+    def __init__(self, uid_min: int = 60000, uid_max: int = 60999, cgroup_root: Path | None = None,
+                 env: dict[str, str] | None = None) -> None:
         self._uid_min = uid_min
         self._uid_max = uid_max
         self._cgroup_root = cgroup_root or Path("/sys/fs/cgroup/siphonophore-core")
+        # None (the default) means "compute default_child_env() fresh at run() time", not "inherit
+        # everything" -- an explicit dict here (including {}) is used exactly as given.
+        self._env = env
 
     def run(self, decision: Decision, intent: Intent) -> Effect:
         require_real_root_linux()
@@ -151,10 +177,12 @@ class UidCgroupBackend(ExecutionBackend):
         try:
             try:
                 wrapped = _CHILD_WRAPPER.format(body=intent.artifact_code)
+                child_env = self._env if self._env is not None else default_child_env()
                 proc = subprocess.Popen(
                     [sys.executable, "-c", wrapped, json.dumps(intent.payload), str(read_fd)],
                     pass_fds=(read_fd,),
                     preexec_fn=_drop_privileges,
+                    env=child_env,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 )
                 os.close(read_fd)

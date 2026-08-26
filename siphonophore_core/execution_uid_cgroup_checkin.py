@@ -51,6 +51,7 @@ from .execution import ExecutionBackend, ExecutionError
 from .execution_uid_cgroup import (
     ProvisioningError,
     add_pid_to_cgroup,
+    default_child_env,
     provision_cgroup,
     provision_ephemeral_user,
     read_real_uid_from_proc,
@@ -95,12 +96,15 @@ class CheckinFailedError(IdentityError):
 
 class CheckedInUidCgroupBackend(ExecutionBackend):
     def __init__(self, uid_min: int = 63500, uid_max: int = 63599, cgroup_root: Path | None = None,
-                 checkin_timeout: float = 10.0) -> None:
+                 checkin_timeout: float = 10.0, env: dict[str, str] | None = None) -> None:
         require_real_root_linux()
         self._uid_min = uid_min
         self._uid_max = uid_max
         self._cgroup_root = cgroup_root or Path("/sys/fs/cgroup/siphonophore-core-checkin")
         self._checkin_timeout = checkin_timeout
+        # None (the default) means "compute default_child_env() fresh at run() time", not
+        # "inherit everything" -- see execution_uid_cgroup.py's own docstring for why this exists.
+        self._env = env
         self._registry = CheckinRegistry()
         socket_path = f"/tmp/sipho-core-checkin-{uuid.uuid4().hex[:8]}.sock"
         self._listener = CheckinListener(socket_path, self._registry)
@@ -133,9 +137,11 @@ class CheckedInUidCgroupBackend(ExecutionBackend):
         try:
             try:
                 wrapped = _child_wrapper.format(body=intent.artifact_code)
+                child_env = self._env if self._env is not None else default_child_env()
                 proc = subprocess.Popen(
                     [sys.executable, "-c", wrapped, json.dumps(intent.payload), self._listener.socket_path, str(read_fd)],
                     pass_fds=(read_fd,), preexec_fn=_drop_privileges,
+                    env=child_env,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 )
                 os.close(read_fd)
