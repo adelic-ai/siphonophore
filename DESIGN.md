@@ -82,8 +82,11 @@ silently reinterpreted to authorize something other than what was actually grant
 
 Stable correlation identifiers (`principal_id`, `agent_id`, `intent_id`, `parent_intent_id`,
 `execution_id`, `pid`, `uid`, `cgroup`) let both channels be joined after being produced
-independently. Reconciliation happens above the two claims, never inside either one, using a
-four-valued comparison rather than a single fuzzy match/no-match:
+independently. Reconciliation happens above the two claims, never inside either one, using
+[Belnap's four-valued logic](https://en.wikipedia.org/wiki/Four-valued_logic) (true, false, both,
+neither) rather than a single fuzzy match/no-match — chosen specifically because collapsing "the
+agent lied" and "the agent did something it never mentioned" into one boolean mismatch would throw
+away exactly the distinction that matters here:
 
 ```
 claimed  observed
