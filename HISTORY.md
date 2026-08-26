@@ -193,3 +193,40 @@ tier a `Policy` can route to, not a replacement. What this pass did *not* decide
 check-in-gated trust should eventually be the default for any delegation rather than an opt-in a
 caller has to choose (see DESIGN.md's "Explicitly open" section) — same_process and
 separate_process delegations still have no check-in or automatic-reconciliation equivalent at all.
+
+## First real model in the loop: AnthropicAPIModel, and the first live-model bug
+
+Everything up to this point had proven the harness's structural properties against
+`ScriptedModel` — deterministic text, never anything a real model would actually produce.
+`AnthropicAPIModel` (`model_anthropic.py`) added the first real, network-backed `Model`:
+Anthropic's own official SDK, API-key billed rather than subscription/OAuth, deliberately —
+the Claude Agent SDK wraps the actual Claude Code CLI, a full local agent runtime with real
+tool-execution capability, so unless every tool were correctly disabled (a configuration choice,
+not a structural fact) it could perform a local effect entirely underneath `Model.complete()`,
+before any Intent exists, invisible to the Gate. A raw API client cannot do that by construction —
+the reason this was worth being deliberate about rather than defaulting to whichever billing model
+was more convenient.
+
+Getting a real model to speak the intent-JSON protocol at all needed one more piece nothing had
+built yet: `DEFAULT_SYSTEM_PROMPT` (`prompts.py`). Without it, a real model has no reason to
+respond with JSON instead of ordinary conversation — the very first real turn would fail on
+`IntentParseError` before anything interesting happened. `parse_intent` also gained tolerance for
+a clean markdown code fence (models commonly wrap JSON in ` ```json ... ``` ` even when told not
+to) — a formatting normalization, not a schema relaxation; a malformed or partial fence is left
+untouched and still fails normally.
+
+**The first live run against `claude-sonnet-5`, through `examples/repl.py`, found a real bug on
+the very first message.** Asked to write a file, the model correctly chose `kind="write_file"`
+but left `artifact_code` out — and execution failed with `"same_process backend requires
+intent.artifact_code"`. Not a model failure: the system prompt said artifact_code was "required
+for run_artifact and delegate," implying write_file might not need it, which is false — no
+backend gives `kind` any special handling at all; every effect happens by running code,
+regardless of which kind label was chosen. The prompt described a distinction that doesn't exist
+in `execution.py`. This is exactly the kind of thing `ScriptedModel`-only testing structurally
+cannot find — a scripted completion is never confused by an ambiguity in the instructions, because
+it doesn't read them. Fixed in the same session (stating plainly that artifact_code is required
+for any intent meant to do something, with an inline example), and re-validated live: the second
+real run against `claude-sonnet-5`, same phrasing, produced a well-formed intent with real
+`artifact_code`, ran under `same_process`, and the target file's content was confirmed by hand
+afterward — the first genuine, non-scripted, end-to-end proof of the whole chain: real model →
+`parse_intent` → `Gate` → `Executor` → real effect on disk.
