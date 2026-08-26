@@ -270,3 +270,41 @@ underlying problem — nothing yet lets one broker run the `uid_cgroup` tiers *a
 unprivileged itself; that needs real deployment-level work (cgroup v2 delegation, a narrowly-scoped
 sudo-mediated path for `useradd`/`userdel`) outside what a pure code change can do. Named explicitly
 in DESIGN.md's open questions rather than left implied.
+
+## Privilege separation for useradd/userdel — validated for real, one of three pieces
+
+The bigger fix — a broker that can use the `uid_cgroup` tiers without being root itself — needed
+naming as three separate problems, not one, since they're not equally hard: cgroup management
+(easy, pure delegation via `chown`, no code change), `useradd`/`userdel` (medium, needs scoped
+elevation), and the `preexec_fn` uid-drop when spawning the artifact process (hard, the forking
+process fundamentally has to already be root to switch to an arbitrary target uid — no
+unprivileged workaround identified yet).
+
+Built and validated the middle piece for real. `provision_ephemeral_user()`/
+`release_ephemeral_user()` now go through two tiny wrapper scripts
+(`scripts/siphonophore-useradd`/`-userdel`), each independently validating the uid range and
+username pattern before calling the real binary with fixed flags — nothing about the actual
+invocation is caller-configurable. Elevated via `_elevation_prefix()`, mirroring
+`warden/privilege.py`'s own pattern exactly (`sudo -n`, never prompt; skipped entirely when already
+root).
+
+Proven on colima, not just reasoned through: a genuinely unprivileged test user, a real scoped
+sudoers grant installed and validated with `visudo -c`, then `provision_ephemeral_user`/
+`release_ephemeral_user` called directly from that unprivileged user — succeeded with zero password
+prompt, created and deleted a real system user. Confirmed the scoping is genuinely narrow, not
+`ALL`: a raw `useradd` via sudo from the same user was denied outright, not covered by the grant.
+Confirmed the wrapper scripts' *own* independent validation, separate from sudo's scoping: an
+out-of-range uid and a non-matching username (`root`) were each refused by the script itself before
+ever reaching the real `useradd`. Both real attacks tested, not one. Test user and sudoers file
+removed afterward; colima confirmed clean.
+
+Real methodology slip, caught the way this project's discipline expects: `sed`'s default per-line
+single substitution left one of two `<REPO_PATH>` placeholders unreplaced on a line with two
+occurrences, producing a syntactically invalid sudoers file. `visudo -c` — which the install
+instructions already required — caught it before anything trusted it; `sudo -n true` was checked
+directly and confirmed still working before fixing the file, rather than assuming the failure mode.
+Fixed with the `g` flag.
+
+**Still fully open, unchanged:** no unprivileged broker can perform the `preexec_fn` uid-drop step
+itself — until that closes, this piece alone does not let a broker run the `uid_cgroup` tiers while
+staying unprivileged.

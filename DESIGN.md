@@ -286,12 +286,18 @@ about itself at startup. Which of these it actually is has not been decided here
   `observations` for exactly this reason, but nothing today distinguishes "nothing happened" from
   "something happened, attribution is invalid" at the type level.
 - A broker process that wants both the `uid_cgroup`/`uid_cgroup_checkin` tiers and the portable
-  tiers available has to run entirely as root today — `useradd`, cgroup management, and the
-  `setuid` privilege drop all require it, and there is no separation between "the broker" and "the
-  specific privileged operations." `same_process`/`separate_process` now refuse outright rather
-  than silently inheriting that root (they raise unless a caller explicitly passes
-  `allow_root=True`), which closes the silent case, but does not solve the underlying one: nothing
-  yet lets a broker run genuinely unprivileged while still using the `uid_cgroup` tiers. That needs
-  real deployment-level work — cgroup v2 delegation (chown a subtree to the broker's own
-  unprivileged uid once, outside this code) plus a narrowly-scoped, `sudo`-mediated path for
-  `useradd`/`userdel` specifically — not a pure code change.
+  tiers available has to run entirely as root today. Three separate pieces, closed unevenly:
+  `same_process`/`separate_process` refuse outright rather than silently inheriting root (raise
+  unless a caller passes `allow_root=True` — closes the silent case). `useradd`/`userdel` now go
+  through privilege separation for real — two self-validating wrapper scripts
+  (`scripts/siphonophore-useradd`/`-userdel`), elevated via a scoped `sudo -n` only when not
+  already root (`scripts/README.md`), validated on colima with a genuinely unprivileged user and a
+  real sudoers grant, not just reasoned through. Cgroup management needs only delegation (`chown` a
+  subtree once, no code change) — documented, not yet exercised end-to-end with an unprivileged
+  broker. **Still fully open:** the `preexec_fn` privilege drop that spawns the artifact process
+  under its target uid still requires the *forking* process to already be root — no unprivileged
+  broker can perform that step itself yet. Needs either `sudo -u '#<uid>'` (letting sudo perform the
+  switch — sudoers' numeric-range runas syntax not yet verified to hold across a full uid range) or
+  Linux user namespaces (`unshare --user` + `newuidmap`/`newgidmap`). Until this closes, no broker
+  can run the `uid_cgroup` tiers while staying unprivileged itself, regardless of the other two
+  pieces being done.
