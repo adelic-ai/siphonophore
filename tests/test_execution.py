@@ -8,7 +8,13 @@ from dataclasses import replace
 
 import pytest
 
-from siphonophore_core.execution import ArtifactMismatchError, ExecutionError, Executor
+from siphonophore_core.execution import (
+    ArtifactMismatchError,
+    ExecutionError,
+    Executor,
+    SameProcessBackend,
+    SeparateProcessBackend,
+)
 from siphonophore_core.intent import Intent
 from siphonophore_core.mediation import Gate, GateViolation
 from siphonophore_core.policy import ConsequencePolicy, Decision
@@ -21,7 +27,15 @@ def gate() -> Gate:
 
 @pytest.fixture
 def executor(gate: Gate) -> Executor:
-    return Executor(gate)
+    # allow_root=True: this file tests dispatch logic (Gate/Executor/backend behavior), not the
+    # root-refusal feature itself (see test_execution_root_refusal.py) -- the full suite is also
+    # run for real as root on colima (test_execution_uid_cgroup.py etc.), and these tests should
+    # exercise the same dispatch logic there too, not incidentally hit the new refusal.
+    backends = {
+        "same_process": SameProcessBackend(allow_root=True),
+        "separate_process": SeparateProcessBackend(allow_root=True),
+    }
+    return Executor(gate, backends=backends)
 
 
 def test_same_process_runs_authorized_artifact(executor: Executor):

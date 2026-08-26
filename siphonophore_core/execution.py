@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import subprocess
 import sys
 from abc import ABC, abstractmethod
@@ -33,6 +34,20 @@ class ExecutionError(RuntimeError):
     """A backend failed to produce the effect for a reason unrelated to authorization (the
     artifact itself raised, a subprocess exited nonzero, ...). Distinct from GateViolation, which
     means the Decision itself was never trustworthy enough to reach a backend at all."""
+
+
+def _running_as_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+_ROOT_REFUSAL_MESSAGE = (
+    "{cls} refuses to run while the broker process is euid 0 (root). {cls} inherits whatever "
+    "privilege the broker itself has -- a broker running as root (needed for uid_cgroup/"
+    "uid_cgroup_checkin) would otherwise let a 'low consequence' intent run with full root "
+    "privilege and zero isolation, since {cls} shares the broker's own process/inherited "
+    "privilege with no privilege drop of its own. Pass allow_root=True only if you have "
+    "independently verified this is safe for your deployment -- it is never the default."
+)
 
 
 class ArtifactMismatchError(GateViolation):
@@ -57,9 +72,18 @@ class ExecutionBackend(ABC):
 
 class SameProcessBackend(ExecutionBackend):
     """Runs `intent.artifact_code` via `exec()` in the calling process. The cheapest, least
-    isolated class -- DESIGN.md section 2's default for low-consequence, trusted-input work."""
+    isolated class -- DESIGN.md section 2's default for low-consequence, trusted-input work.
+
+    Refuses to run at all while the broker is euid 0 by default (see `allow_root`) -- `exec()`
+    here runs with exactly the broker's own privilege, no drop of any kind, so a root broker
+    (needed for the uid_cgroup tiers) would otherwise hand a "low consequence" intent full root."""
+
+    def __init__(self, allow_root: bool = False) -> None:
+        self._allow_root = allow_root
 
     def run(self, decision: Decision, intent: Intent) -> Effect:
+        if not self._allow_root and _running_as_root():
+            raise ExecutionError(_ROOT_REFUSAL_MESSAGE.format(cls="same_process"))
         if intent.artifact_code is None:
             raise ExecutionError("same_process backend requires intent.artifact_code")
         namespace: dict = {"payload": intent.payload}
@@ -70,9 +94,18 @@ class SameProcessBackend(ExecutionBackend):
 class SeparateProcessBackend(ExecutionBackend):
     """Runs `intent.artifact_code` as a real, separate OS process (`subprocess.run`) -- real
     process isolation, no uid change. `intent.payload` is passed as a single JSON-encoded argv
-    argument."""
+    argument.
+
+    Refuses to run at all while the broker is euid 0 by default (see `allow_root`) -- a genuinely
+    separate process is not the same thing as a genuinely unprivileged one: with no `user=`/
+    `preexec_fn` privilege drop, this spawned process still runs as root if the broker does."""
+
+    def __init__(self, allow_root: bool = False) -> None:
+        self._allow_root = allow_root
 
     def run(self, decision: Decision, intent: Intent) -> Effect:
+        if not self._allow_root and _running_as_root():
+            raise ExecutionError(_ROOT_REFUSAL_MESSAGE.format(cls="separate_process"))
         if intent.artifact_code is None:
             raise ExecutionError("separate_process backend requires intent.artifact_code")
         try:

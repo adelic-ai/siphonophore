@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from siphonophore_core.execution import Executor
+from siphonophore_core.execution import Executor, SameProcessBackend, SeparateProcessBackend
 from siphonophore_core.mediation import Gate, GateViolation
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.broker import Broker
@@ -20,7 +20,14 @@ from siphonophore_harness.model import ScriptedModel
 
 def _make_loop(completions: list[str]) -> CognitiveLoop:
     gate = Gate(ConsequencePolicy())
-    broker = Broker(gate=gate, executor=Executor(gate))
+    # allow_root=True: this file tests CognitiveLoop's own dispatch logic, not the root-refusal
+    # feature (see test_execution_root_refusal.py) -- the full suite also runs as real root on
+    # colima, and these portable tests should exercise the same logic there too.
+    backends = {
+        "same_process": SameProcessBackend(allow_root=True),
+        "separate_process": SeparateProcessBackend(allow_root=True),
+    }
+    broker = Broker(gate=gate, executor=Executor(gate, backends=backends))
     return CognitiveLoop(model=ScriptedModel(completions), broker=broker, principal_id="alice")
 
 
