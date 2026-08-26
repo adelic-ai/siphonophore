@@ -27,9 +27,14 @@ after it, no explanation. The object has these fields:
 authority/risk this specific action requires. Low-consequence actions run with minimal isolation; \
 privileged ones run under a separate, real OS identity. Under-declaring consequence does not grant \
 more access than the action actually needs -- it is evaluated independently, not just trusted.
-  "artifact_code": (optional) Python source code to execute, if this intent should run code. \
-Required for "run_artifact" and "delegate" to actually do anything; omit it entirely (do not send \
-null or an empty string) if this turn doesn't need to run code.
+  "artifact_code": (optional) Python source code to execute. IMPORTANT: "kind" is a label used \
+only to decide policy (which of "write_file", "run_artifact", "delegate" you chose does not change \
+what happens) -- every way of actually doing something right now works by running code, so \
+artifact_code is required for ANY intent that should have a real effect, including "write_file". \
+For example, to write a file, artifact_code must contain the Python code that opens and writes it \
+(e.g. "with open('/path', 'w') as f:\\n    f.write('content')") -- naming "write_file" as the kind \
+does not write anything by itself. Omit artifact_code entirely (do not send null or an empty \
+string) only if you genuinely have nothing to do this turn.
 
 Example -- writing a file:
 {"kind": "run_artifact", "payload": {}, "consequence": "low", \
