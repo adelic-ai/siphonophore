@@ -302,4 +302,14 @@ about itself at startup. Which of these it actually is has not been decided here
   crossing that boundary, genuinely separate fds past it — but no implementation exists yet.
   Nothing else should be built against that contract until it's been reviewed for any capability it
   might accidentally grant the broker. Until this closes, no broker can run the `uid_cgroup` tiers
-  while staying unprivileged itself, regardless of the other two pieces being done.
+  while staying unprivileged itself, regardless of the other two pieces being done. **What this
+  helper explicitly does not, and structurally cannot, close: whether the broker's own request was
+  ever authorized by `Gate.submit()` in the first place.** The helper's `SH-23` invariant provides
+  execution-identity consistency and replay prevention (at most one spawn per `execution_id`), not
+  an independent attestation of Gate authorization — the helper has no access to the Gate's own
+  secret, and giving it one would expand its trusted surface rather than narrow it. This is the same
+  gap this section already names: a broker whose own process is compromised already holds the
+  Gate's secret and needs no help from `siphonophore-spawn` to mint a valid `Decision` for anything
+  it wants. **Authorization belongs above the execution substrate** — closing this for real is a
+  question of who attests the broker's own integrity, not something a spawn helper can be made to
+  answer by construction.

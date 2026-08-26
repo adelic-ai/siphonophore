@@ -1,7 +1,7 @@
 # Contract: `siphonophore-spawn` — the privileged helper that closes the broker-root-privilege gap
 
-**Status:** PINNED, 2026-08-26 (amended same day after a capability-audit review — see "Amendment
-history" at the end). This document defines the interface and the invariants it enforces. **No
+**Status:** PINNED, 2026-08-26 (amended twice same day after two rounds of capability-audit review —
+see "Amendment history" at the end). This document defines the interface and the invariants it enforces. **No
 implementation exists yet.** Nothing here should be built against until this document itself is
 reviewed and any capability it grants the broker — intentional or accidental — is confirmed to be
 exactly what was meant.
@@ -25,10 +25,12 @@ nicer protocol wrapped around it. Every invariant below is in service of this on
 of them is optional.
 
 A second, related property, made explicit by this amendment: **the broker's authority is to spawn
-*this specific, not-yet-consumed execution* — not "any currently valid siphonophore ephemeral
+*this specific, not-yet-consumed execution slot* — not "any currently valid siphonophore ephemeral
 account."** `uid`+`username` alone identify an account that could, in principle, already be in use
-by a different, unrelated execution; `execution_id` (§`SH-23`) is what actually binds a spawn
-request to the one intent it was authorized for.
+by a different, unrelated execution; `execution_id` (§`SH-23`) is what prevents that reuse/collision
+from a single spawn attempt. **What `execution_id` does *not* do — see `SH-23`'s trust-boundary
+note — is prove that this spawn was ever authorized by `Gate.submit()` in the first place; that
+verification happens one layer up, inside the broker, before the helper is ever invoked.**
 
 ## Actors and flow
 
@@ -136,8 +138,10 @@ Each of these is a distinct, independently testable refusal — not folded into 
 
 ## Cgroup membership and one-shot execution binding (`SH-23`)
 
-**Added by this amendment — the most significant gap the capability-audit review found.** Two
-things, resolved together because they're the same mechanism:
+**Added by the first capability-audit amendment; narrowed to a true claim by the second (this
+one) after a further review correctly identified that the original wording overclaimed what this
+mechanism actually establishes.** Two things, resolved together because they're the same
+mechanism:
 
 1. **The final process must already be a member of its target cgroup before any
    artifact-controlled instruction executes.** Without this, there is a real window — the helper
@@ -147,19 +151,52 @@ things, resolved together because they're the same mechanism:
    this today via a sync-pipe handshake (the child blocks on a read before running artifact code;
    the parent adds it to the cgroup first, then signals go-ahead) — this contract's first draft
    simply failed to carry that already-proven mechanism forward. Fixed here, not deferred.
-2. **`uid`+`username` alone identify a reusable *account*, not a specific, one-time *execution
-   authorization*.** A buggy or compromised broker could invoke the helper twice with the same
-   valid uid/username pair, running unrelated code under an identity another execution is already
-   using — muddying exactly the attribution this whole architecture exists to preserve.
+2. **`uid`+`username` alone identify a reusable *account*, not a specific spawn attempt.** A buggy
+   or compromised broker could invoke the helper twice with the same valid uid/username pair,
+   running unrelated code under an identity another execution is already using.
 
 Both close via the same construction: the helper derives the target cgroup path from **fixed
 helper-side configuration + the envelope's `execution_id`** — e.g. `{CGROUP_ROOT}/exec-{execution_id}`,
 matching `provision_cgroup()`'s own existing naming convention — never from anything the broker
 supplies as a path. Creating that leaf is `mkdir(..., exist_ok=False)`: if it already exists, the
-helper refuses (`SH-17`) — that `execution_id` has already been consumed by an earlier spawn, so
-this request cannot be a legitimate first use of it. Successfully creating the leaf *is* the proof
-of one-shot, not-yet-consumed authorization. The process is added to that cgroup immediately after
+helper refuses (`SH-17`) — that `execution_id` has already been used in an earlier spawn attempt,
+so this request cannot be a first use of it. The process is added to that cgroup immediately after
 creation, still as root, before `SH-04`/`SH-25`/`SH-06` proceed.
+
+**What this precisely guarantees, stated narrowly:** for a given `execution_id`, the helper permits
+at most one successful spawn into the correspondingly derived cgroup. The helper verifies that the
+expected cgroup leaf does not already exist, binds the spawn to that leaf atomically with creating
+it, rejects reuse/collision, and ensures cgroup membership before any artifact-controlled code
+executes. This provides **execution-identity consistency and replay prevention.**
+
+**What this does *not* guarantee, and cannot be made to: that the originating broker action was
+ever authorized by `Gate.submit()`.** The broker holds real, delegated capability to create *any*
+leaf under the configured cgroup subtree — that capability is exactly what cgroup delegation grants
+it (`chown` the subtree once, no further code or root needed; see `scripts/README.md`). A leaf
+existing, or an `execution_id` never having been used before, therefore proves only "the broker
+asked for this specific, previously-unused name" — it says nothing about whether a `Decision` was
+ever minted for it. Closing that gap for real would require the helper to independently verify
+Gate-issued authorization, which it structurally cannot do without either (a) sharing the Gate's own
+HMAC secret with the helper — expanding exactly the privileged surface this whole redesign exists to
+narrow, since a second process would then hold key material capable of validating (and, depending on
+shape, forging) authorization — or (b) a wholly separate authorization-capability subsystem with its
+own secret and its own registration step, which is real, buildable future work, not something to
+fold silently into a cgroup-naming convention. Either way, it is out of scope for `siphonophore-spawn`
+specifically: **authorization belongs above the execution substrate**, at the Gate/policy boundary,
+not inside the mechanism that merely carries out an already-authorized spawn.
+
+This also does not newly weaken anything: a broker capable of fabricating a plausible `execution_id`
+is, by definition, a broker whose own process has been compromised — and a compromised broker already
+holds the Gate's own secret in memory, since they are the same process, meaning it could mint a
+genuinely valid `Decision` for anything it wants without ever needing to go near `SH-23`'s
+replay-prevention check at all. Gate-level cryptographic authorization defends against forgery *from
+outside the process holding the key*, not against that process's own compromise. Whether the broker
+itself is running the code it's supposed to be running is a question this contract cannot answer —
+it is the same question DESIGN.md §8 already names and leaves explicitly, permanently open:
+*"who attests the broker's own integrity."* `siphonophore-spawn` narrows what a compromised or buggy
+broker can do (bounded, non-root, environment-sanitized, uniquely-scoped execution, never privilege
+escalation) — it does not, and structurally cannot, establish that the broker itself should be
+trusted in the first place.
 
 ## Fixed final-runtime fd numbers (`SH-24`)
 
@@ -198,7 +235,30 @@ modify it after this point, rewinds it to offset 0, and `dup2()`s it to the fixe
 the content is already fully and immutably present — the runtime just reads from a fixed position.
 Sealing is a second real property beyond solving the blocking problem: the final runtime is
 guaranteed the bytes it reads are exactly what the helper validated, not something that could
-still change underneath it.
+still change underneath it — but only if the ordering below is followed exactly; sealing after
+exposure, or exposing a writable descriptor, would make "sealed memfd" sound stronger in this
+contract than the actual fd rights prove.
+
+**Normative order, no step skipped or reordered:**
+
+```
+write bounded memfd (SH-14-capped)
+  → apply required seals (F_SEAL_WRITE | F_SEAL_SHRINK | F_SEAL_GROW)
+  → verify the seals actually took (query fd seal state, don't assume the call succeeded silently)
+  → rewind to offset 0
+  → expose the fixed fd number (SH-24) to the final runtime as read-only —
+    the descriptor the artifact receives must not carry O_RDWR or O_WRONLY
+  → drop privilege (SH-06)
+  → exec
+```
+
+Sealing must complete, and be independently verified as having taken effect, **before** the fd is
+`dup2()`'d into a descriptor the final runtime (and therefore the artifact) can see — a seal applied
+after exposure, or an unverified seal call, leaves a window where the descriptor looks sealed in the
+contract's prose but isn't actually immutable in practice. The artifact-facing descriptor is opened
+read-only from the start, not opened read-write and merely sealed — sealing prevents shrink/grow/
+further writes, but a descriptor that still carries `O_RDWR` is a distinct, additional capability
+this contract does not intend to grant the artifact.
 
 **Nonce stays a pipe, unchanged.** Its existing one-shot blocking-read semantics
 (`read_nonce_from_fd()`) are already validated and small (a fixed-length hex string, nowhere near
@@ -230,11 +290,11 @@ eventually implemented in C or Python (this contract does not decide that — se
 closed, before any artifact-controlled instruction executes — and, as of this amendment, cgroup
 membership (`SH-23`) is established before that same point too.** The full required ordering:
 validate identity + `execution_id` (`SH-01`/`SH-02`) → establish cgroup membership (`SH-23`) →
-construct environment (`SH-04`) → establish source/payload/nonce fds (`SH-24`/`SH-25`) → drop
-supplementary groups, gid, uid (`SH-06`) → close everything else (`SH-07`) → exec the fixed
-bootstrap. No source byte the broker supplied is interpreted as code, and no payload byte is exec'd
-or evaluated, until all of the above has completed successfully. This ordering is part of the
-guarantee this contract makes, not incidental plumbing.
+construct environment (`SH-04`) → establish source/payload/nonce fds, seal-then-verify before
+exposure (`SH-24`/`SH-25`) → drop supplementary groups, gid, uid (`SH-06`) → close everything else
+(`SH-07`) → exec the fixed bootstrap. No source byte the broker supplied is interpreted as code, and
+no payload byte is exec'd or evaluated, until all of the above has completed successfully. This
+ordering is part of the guarantee this contract makes, not incidental plumbing.
 
 ## Liveness invariant (`SH-21`)
 
@@ -286,6 +346,38 @@ originally confirmed the nonce's own argv-avoidance for real rather than assumin
   - Confirmed, not changed: broker-supplied arbitrary artifact source is intentional (that's the
     mechanism's whole purpose, constrained by *how* it can run, not *whether*); the
     multiplexed-stdin-over-`sudo` transport design from the initial draft holds.
+- **2026-08-26 (same day, second amendment — trust-boundary correction):** a further review
+  correctly identified that `SH-23`'s original wording overclaimed what cgroup-leaf creation
+  actually proves — "successfully creating the leaf IS the proof of one-shot authorization" reads
+  as a claim that the leaf's existence establishes `Gate.submit()`-level authorization, which it
+  cannot, since the broker holds real delegated capability to create any leaf under the configured
+  subtree independent of any Gate decision. Resolved by narrowing, not by adding a new verification
+  mechanism to the helper:
+  - `SH-23` rewritten to state its guarantee precisely as **execution-identity consistency and
+    replay prevention** (at most one successful spawn per `execution_id`), and to state explicitly,
+    in its own trust-boundary paragraph, that it does *not* attest that the originating broker
+    action was Gate-authorized — that verification already happens one layer up, inside the broker,
+    before `Gate.verify()` even lets the broker's own `Executor.execute()` proceed to invoke this
+    helper at all.
+  - Explicitly declined to add a second, helper-side authorization-verification mechanism (e.g.
+    sharing the Gate's HMAC secret with the helper, or a separate authorization-capability
+    subsystem) — considered and rejected for this contract specifically, both because it would
+    expand the helper's own trusted surface (the property `SH-26` and this contract's central
+    property exist to keep narrow) and because it cannot close the underlying gap regardless: a
+    broker whose own process is compromised already holds the Gate's secret and can mint a
+    genuinely valid `Decision`, making a second, helper-level check redundant against the actual
+    threat it would need to defend against. **Authorization belongs above the execution
+    substrate** — named here as a design principle, not just a one-off scoping call.
+  - The residual gap (a compromised or sufficiently buggy broker minting an `execution_id` with no
+    real `Decision` behind it) is tied explicitly to DESIGN.md §8's already-open, unresolved
+    question — "who attests the broker's own integrity" — rather than left as an implicit,
+    undocumented assumption of `SH-23`.
+  - `SH-25` amended to make the seal-before-exposure ordering normative and independently verified
+    (query seal state after applying seals, don't assume success), and to require the
+    artifact-facing descriptor be opened read-only from the start rather than read-write-then-sealed
+    — a smaller, separately-raised point in the same review, folded in here since both concern what
+    a descriptor actually, verifiably proves versus what the prose claims it proves.
+  - `SH-20`'s ordering invariant updated to reference the seal-then-verify step explicitly.
 
 ## Next step
 

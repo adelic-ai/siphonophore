@@ -308,3 +308,73 @@ Fixed with the `g` flag.
 **Still fully open, unchanged:** no unprivileged broker can perform the `preexec_fn` uid-drop step
 itself — until that closes, this piece alone does not let a broker run the `uid_cgroup` tiers while
 staying unprivileged.
+
+## The spawn-helper contract: frozen, then amended twice by review, before any code existed
+
+The third and hardest piece — the `preexec_fn` uid-drop, which needs the forking process to already
+be root — got a dedicated privileged helper (`siphonophore-spawn`) rather than a bare `sudo -u`
+grant, on the reasoning that a broad grant covering the whole ephemeral uid range with an arbitrary
+command is "smaller than root but still surprisingly powerful." Interface frozen first, deliberately
+before implementation, at `contracts/spawn_helper.md` — matching this project's own stated
+discipline (§4: name every trust boundary; freeze the contract, don't build against a moving one).
+
+Two rounds of review found real gaps in the frozen contract, both incorporated as amendments before
+any code was written to defend the original wording:
+
+- **Round one (capability audit):** the original draft let `uid`+`username` alone authorize a
+  spawn — only a reusable account, not a specific execution — and let cgroup membership happen
+  *after* the artifact could run, a real regression versus the sync-pipe handshake the existing
+  `UidCgroupBackend` already uses. Fixed by binding spawn to `execution_id` and cgroup-leaf creation
+  (`SH-23`), pinning final-runtime fd numbers (`SH-24`), and replacing a genuinely deadlocking
+  pipe-based transport design with sealed `memfd`s (`SH-25` — a plain pipe blocks the writer once
+  content exceeds the kernel buffer, and no reader exists until after the privileged helper exec's
+  the runtime that would read it).
+- **Round two (trust-boundary correction):** the round-one fix for `SH-23` itself overclaimed —
+  "successfully creating the cgroup leaf is the proof of one-shot authorization" reads as a claim
+  that leaf existence proves `Gate.submit()`-level authorization, but the broker holds real,
+  delegated capability to create *any* leaf under the configured subtree, independent of any Gate
+  decision. Resolved by narrowing the claim, not by adding a second verification mechanism: `SH-23`
+  now states its actual guarantee precisely — execution-identity consistency and replay prevention,
+  nothing more — and says explicitly that it cannot and does not attest that the originating
+  request was Gate-authorized. Explicitly declined to close that residual gap by sharing the Gate's
+  own secret with the helper, or building a separate authorization-capability subsystem, for two
+  reasons: it would expand the helper's own trusted surface (against the whole point of this
+  redesign), and it wouldn't actually help against the threat that matters — a broker whose own
+  process is compromised already holds the Gate's secret in memory and can mint a genuinely valid
+  `Decision` without going near `siphonophore-spawn` at all. That residual gap is the same one
+  DESIGN.md §8 already names and leaves open: who attests the broker's own integrity. Also fixed a
+  smaller, related overclaim in `SH-25`: seals must be applied and independently verified *before*
+  the descriptor is exposed to the final runtime, and that descriptor must be opened read-only from
+  the start — otherwise "sealed memfd" sounds stronger in the contract's prose than the actual fd
+  rights prove.
+
+**Status unchanged from before either amendment: PINNED, zero implementation.** The next real
+session on this thread should read the contract fresh (`contracts/spawn_helper.md`, "Amendment
+history" section at the end), confirm it still looks right, then implement — `siphonophore-spawn`
+itself, the broker's client-side envelope writer, one test per `SH-NN` invariant.
+
+## Architectural context arrived: siphonophore as a policy boundary under NeMo Fabric, not a standalone harness
+
+A separate context document (`SIPHONOPHORE_NEMO_CONTEXT.md`) reframed the project's own scope:
+build against NVIDIA NeMo Fabric rather than grow another general-purpose agent harness. Fabric
+owns the generic runtime concerns — model/provider integration, multi-agent orchestration,
+lifecycle, tools/MCP plumbing, telemetry — and NVIDIA's existing sandbox technologies should be used
+where they satisfy the required isolation guarantee rather than duplicated inside siphonophore.
+Siphonophore's own job narrows to the security decision between agent intent and execution:
+authorize/deny, establish attributable execution identity, determine required isolation, select
+execution substrate — with the substrate itself (uid+cgroup, NVIDIA sandbox, container, VM) chosen
+by risk, not prescribed as one fixed topology.
+
+This makes the spawn-helper work *more* coherent, not obsolete — `siphonophore-spawn` becomes one
+substrate adapter (the Linux uid+cgroup one) beneath a policy boundary that's explicitly supposed to
+support several, not the architecture's own center of gravity. It also sharpens the trust-boundary
+conclusion reached the same day: authorization belongs at the Gate/policy layer, above every
+substrate adapter including this one — a principle this framing states directly rather than leaves
+implicit.
+
+**Not yet done: reconciling DESIGN.md's own stated thesis and shape (§0, §6 in particular) against
+this framing.** The document's opening line still describes siphonophore as "an SDK for mediated,
+attributable agent harnesses" — true of the mechanism, but no longer the framing this context
+document gives for why that mechanism exists or what sits above/below it in a real deployment. The
+code built so far survives this reframing without changes; what needs updating is the conceptual
+ownership boundary DESIGN.md draws around the project, not any invariant it currently enforces.
