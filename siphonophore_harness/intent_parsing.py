@@ -28,6 +28,20 @@ class IntentParseError(ValueError):
     Gate."""
 
 
+def _strip_code_fence(text: str) -> str:
+    """A real model, even when instructed to emit raw JSON, commonly wraps it in a markdown code
+    fence (```json ... ``` or ``` ... ```) out of habit. Stripping one exact, well-formed fence is
+    a formatting normalization, not a loosening of the schema check below -- json.loads() still
+    has to succeed on whatever remains, and anything that isn't a clean, complete fence is left
+    untouched and fails json.loads() the same way it always did."""
+    stripped = text.strip()
+    if stripped.startswith("```") and stripped.endswith("```") and len(stripped) >= 6:
+        first_newline = stripped.find("\n")
+        body_start = first_newline + 1 if first_newline != -1 else 3
+        return stripped[body_start:-3].strip()
+    return text
+
+
 def parse_intent(completion: str, principal_id: str) -> Intent:
     """`completion` is expected to be a single JSON object naming the intent the model wants to
     make: {"kind": ..., "payload": {...}, "consequence": "low"|"high"|"privileged",
@@ -36,7 +50,7 @@ def parse_intent(completion: str, principal_id: str) -> Intent:
     from untrusted text would let a completion claim to be a replay of, or collide with, an
     intent_id the Gate has already minted a Decision for."""
     try:
-        data = json.loads(completion)
+        data = json.loads(_strip_code_fence(completion))
     except json.JSONDecodeError as exc:
         raise IntentParseError(f"completion is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):

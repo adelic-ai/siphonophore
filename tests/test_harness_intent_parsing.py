@@ -62,3 +62,29 @@ def test_completion_cannot_name_its_own_intent_id():
     completion = json.dumps({"kind": "write_file", "intent_id": "attacker-chosen-id"})
     with pytest.raises(IntentParseError):
         parse_intent(completion, principal_id="alice")
+
+
+def test_json_code_fence_with_language_tag_is_stripped():
+    """Real models commonly wrap JSON in a ```json ... ``` fence even when told not to -- this is
+    a formatting normalization, not a schema relaxation."""
+    body = json.dumps({"kind": "write_file"})
+    completion = f"```json\n{body}\n```"
+    intent = parse_intent(completion, principal_id="alice")
+    assert intent.kind == "write_file"
+
+
+def test_code_fence_without_language_tag_is_stripped():
+    body = json.dumps({"kind": "write_file"})
+    completion = f"```\n{body}\n```"
+    intent = parse_intent(completion, principal_id="alice")
+    assert intent.kind == "write_file"
+
+
+def test_incomplete_fence_is_left_alone_and_fails_normally():
+    """Only a clean, complete fence (both sides present) is stripped -- a malformed one-sided
+    fence is left untouched and fails json.loads() the same way it always did, not silently
+    half-normalized into something that might parse wrong."""
+    body = json.dumps({"kind": "write_file"})
+    completion = f"```json\n{body}"  # no closing fence
+    with pytest.raises(IntentParseError):
+        parse_intent(completion, principal_id="alice")
