@@ -230,3 +230,22 @@ real run against `claude-sonnet-5`, same phrasing, produced a well-formed intent
 `artifact_code`, ran under `same_process`, and the target file's content was confirmed by hand
 afterward — the first genuine, non-scripted, end-to-end proof of the whole chain: real model →
 `parse_intent` → `Gate` → `Executor` → real effect on disk.
+
+## Real environment-inheritance gap, found by applying an external audit method to this repo directly
+
+Elad Meged's "Trusted Enough to Run" (Black Hat USA 2026) documents the same bug shape recurring
+across Claude Code, Gemini CLI, and Codex: one component marks something safe (sanitized,
+read-only, pre-approved), and a more powerful component downstream consumes it without
+re-checking. His Gemini CLI case — environment sanitization done correctly at the application
+layer, while the spawned child still shared the parent's OS-level PID namespace and could read
+real secrets straight out of `/proc/$PPID/environ` — was checked directly against
+`UidCgroupBackend`/`CheckedInUidCgroupBackend` rather than just read about. Same gap, found for
+real: neither backend's `subprocess.Popen()` call passed `env=`, so a spawned child inherited the
+broker's *entire* environment by Python's own default behavior, including any real secret the
+broker process held (`ANTHROPIC_API_KEY`, running through `examples/repl.py`), despite genuinely
+running under a different, unprivileged, kernel-verified uid. The uid boundary was real; the
+environment boundary was never built at all. Fixed with `default_child_env()` — an explicit
+allowlist (`PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`) computed fresh per execution rather than the
+parent's environment filtered after the fact — validated for real on colima: a fake secret set in
+the broker's own environment is confirmed absent from a real spawned child's environment, for both
+backends, not merely asserted to be filtered.
