@@ -2,9 +2,10 @@
 """Interactive REPL driving a real CognitiveLoop against a real Claude model.
 
 The first genuine end-to-end validation of siphonophore-harness: does the loop survive contact
-with actual model output, not just ScriptedModel's deterministic text? Run this yourself, type
-messages, and watch what actually happens on each turn -- the raw completion, then the resulting
-Effect (or the error, if the model's output didn't satisfy parse_intent or the Gate refused it).
+with actual model output, not just ScriptedModel's deterministic text? Run this yourself and type
+messages. By default only prints the model's "message" field (plain conversation) each turn --
+pass --verbose to also see the raw completion and Effect detail, useful while examining how the
+mediation actually behaves rather than just chatting.
 
 Setup:
     cd /path/to/siphonophore
@@ -50,6 +51,7 @@ def main() -> int:
     parser.add_argument("--model", required=True, help="exact Anthropic model id, e.g. claude-...")
     parser.add_argument("--api-key", default=None, help="defaults to $ANTHROPIC_API_KEY")
     parser.add_argument("--principal-id", default="human-operator")
+    parser.add_argument("--verbose", action="store_true", help="also print the raw completion and Effect detail")
     args = parser.parse_args()
 
     api_key = args.api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -89,9 +91,15 @@ def main() -> int:
             print(f"[unexpected error: {type(exc).__name__}: {exc}]\n")
             continue
 
-        raw_completion = loop.history[-2]["content"]
-        print(f"[model said]\n  {raw_completion}\n")
-        print(f"[effect]\n  execution_class={effect.execution_class!r}\n  detail={effect.detail}\n")
+        if loop.last_message:
+            print(f"{loop.last_message}\n")
+        else:
+            print("[no message this turn]\n")
+
+        if args.verbose:
+            raw_completion = loop.history[-2]["content"]
+            print(f"[raw completion]\n  {raw_completion}\n")
+            print(f"[effect]\n  execution_class={effect.execution_class!r}\n  detail={effect.detail}\n")
 
     return 0
 

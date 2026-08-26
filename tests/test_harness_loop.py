@@ -69,3 +69,45 @@ def test_completion_requesting_a_denied_kind_is_refused_by_the_gate_not_silently
     loop = _make_loop([denied])
     with pytest.raises(GateViolation):
         loop.step("do something forbidden")
+
+
+def test_last_message_set_from_the_parsed_completion():
+    completion = json.dumps({"message": "sure, doing that", "kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})
+    loop = _make_loop([completion])
+    loop.step("please run something")
+    assert loop.last_message == "sure, doing that"
+
+
+def test_last_message_none_when_the_completion_has_no_message_field():
+    completion = json.dumps({"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})
+    loop = _make_loop([completion])
+    loop.step("please run something")
+    assert loop.last_message is None
+
+
+def test_last_message_does_not_leak_from_a_previous_turn():
+    with_message = json.dumps({"message": "first turn's message", "kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})
+    without_message = json.dumps({"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})
+    loop = _make_loop([with_message, without_message])
+    loop.step("first")
+    assert loop.last_message == "first turn's message"
+    loop.step("second")
+    assert loop.last_message is None  # not stale text from the first turn
+
+
+def test_last_message_is_set_even_when_the_gate_refuses_the_dispatch():
+    """message is extracted before dispatch is attempted -- a refused intent still lets the human
+    see what the model said, even though nothing it described actually happened."""
+    denied = json.dumps({"message": "I'll try this forbidden thing", "kind": "definitely_not_allowed", "consequence": "low"})
+    loop = _make_loop([denied])
+    with pytest.raises(GateViolation):
+        loop.step("do something forbidden")
+    assert loop.last_message == "I'll try this forbidden thing"
+
+
+def test_last_message_is_none_when_the_completion_fails_to_parse_at_all():
+    hostile = json.dumps({"kind": "run_artifact", "consequence": "low", "token": "trust-me-bro"})
+    loop = _make_loop([hostile])
+    with pytest.raises(IntentParseError):
+        loop.step("do something")
+    assert loop.last_message is None

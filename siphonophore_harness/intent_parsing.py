@@ -15,11 +15,26 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 
 from siphonophore_core.intent import Intent
 
 REQUIRED_FIELDS = ("kind",)
-ALLOWED_FIELDS = {"kind", "payload", "consequence", "artifact_code"}
+ALLOWED_FIELDS = {"kind", "payload", "consequence", "artifact_code", "message"}
+
+
+@dataclass(frozen=True)
+class ParsedTurn:
+    """What one completion actually contains: the Intent (the only thing that ever reaches the
+    Gate) and, separately, an optional human-facing `message`. `message` is pure display text --
+    it is never passed to Broker.dispatch(), never reaches Gate or Executor, and has no effect on
+    what gets authorized or how. Splitting it out here rather than folding it into Intent keeps
+    siphonophore-core free of anything conversational (DESIGN.md section 6: no Conversation
+    concept in the core) -- this is a harness-only concept, for a harness that chooses to show a
+    human what the model said alongside what it did."""
+
+    intent: Intent
+    message: str | None = None
 
 
 class IntentParseError(ValueError):
@@ -42,13 +57,15 @@ def _strip_code_fence(text: str) -> str:
     return text
 
 
-def parse_intent(completion: str, principal_id: str) -> Intent:
+def parse_intent(completion: str, principal_id: str) -> ParsedTurn:
     """`completion` is expected to be a single JSON object naming the intent the model wants to
     make: {"kind": ..., "payload": {...}, "consequence": "low"|"high"|"privileged",
-    "artifact_code": "..."}. `intent_id` is always freshly generated here, never taken from the
-    completion -- the model has no legitimate reason to name its own intent_id, and accepting one
-    from untrusted text would let a completion claim to be a replay of, or collide with, an
-    intent_id the Gate has already minted a Decision for."""
+    "artifact_code": "...", "message": "..."}. `intent_id` is always freshly generated here, never
+    taken from the completion -- the model has no legitimate reason to name its own intent_id, and
+    accepting one from untrusted text would let a completion claim to be a replay of, or collide
+    with, an intent_id the Gate has already minted a Decision for.
+
+    `message`, if present, is returned alongside the Intent, never inside it -- see ParsedTurn."""
     try:
         data = json.loads(_strip_code_fence(completion))
     except json.JSONDecodeError as exc:
@@ -63,7 +80,7 @@ def parse_intent(completion: str, principal_id: str) -> Intent:
     if missing:
         raise IntentParseError(f"completion is missing required intent fields: {missing}")
 
-    return Intent(
+    intent = Intent(
         kind=data["kind"],
         principal_id=principal_id,
         intent_id=str(uuid.uuid4()),
@@ -71,3 +88,4 @@ def parse_intent(completion: str, principal_id: str) -> Intent:
         consequence=data.get("consequence", "low"),
         artifact_code=data.get("artifact_code"),
     )
+    return ParsedTurn(intent=intent, message=data.get("message"))

@@ -29,22 +29,32 @@ class CognitiveLoop:
         self._broker = broker
         self._principal_id = principal_id
         self.history: list[dict] = []
+        self.last_message: str | None = None
 
     def step(self, user_message: str) -> Effect:
-        """One turn: append the user's message, get a completion, parse it into an Intent,
-        dispatch it through the Broker, and feed the resulting Effect back into history as the
-        next turn's context -- so the model sees what actually happened, not merely what its own
-        prior completion claimed it would do.
+        """One turn: append the user's message, get a completion, parse it into an Intent (plus
+        an optional human-facing message, intent_parsing.ParsedTurn), dispatch the Intent through
+        the Broker, and feed the resulting Effect back into history as the next turn's context --
+        so the model sees what actually happened, not merely what its own prior completion claimed
+        it would do.
+
+        `self.last_message` is set from the parsed completion before dispatch is attempted, and
+        reset to None at the start of every step() -- so it reflects this turn's own message (or
+        the honest absence of one) even if dispatch is refused, and never carries stale text over
+        from a previous turn if this one fails to parse at all. It is pure display state: nothing
+        about dispatch, the Gate, or the Executor reads it or is affected by it.
 
         A malformed or hostile completion (intent_parsing.IntentParseError) or a denied/refused
         dispatch (GateViolation and subclasses, from broker.py) propagates rather than being
         swallowed here -- deciding how to recover from either is a caller-level policy question
         (retry, apologize to the user, escalate), not something this minimal loop should decide
         silently on the caller's behalf."""
+        self.last_message = None
         self.history.append({"role": "user", "content": user_message})
         completion = self._model.complete(self.history)
-        intent = parse_intent(completion, self._principal_id)
-        effect = self._broker.dispatch(intent)
+        parsed = parse_intent(completion, self._principal_id)
+        self.last_message = parsed.message
+        effect = self._broker.dispatch(parsed.intent)
         self.history.append({"role": "assistant", "content": completion})
         self.history.append({"role": "effect", "content": _describe_effect(effect)})
         return effect
