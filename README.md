@@ -506,6 +506,5 @@ not yet exposed through `Broker` / `CognitiveLoop`; see **Current state** above.
 
 Apache 2.0 — see `LICENSE`.
 
-[^trusted-enough]: Adapted from Elad Meged, *Trusted Enough to Run*, Black Hat USA 2026. No stable
-    official session/presentation URL is available in this project's materials; cited by name
-    rather than link.
+[^trusted-enough]: Adapted from Elad Meged, *Trusted Enough to Run*, Black Hat USA 2026:
+    <https://blackhat.com/us-26/briefings/schedule/?#trusted-enough-to-run-breaking-ai-agents-in-official-workflows-53406>.
