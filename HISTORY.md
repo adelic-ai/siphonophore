@@ -626,3 +626,71 @@ unconditional; and the resulting effect executes under a real OS identity throug
 boundary the broker itself does not possess: `SpawnHelperBackend`, confirmed via a genuinely
 unprivileged broker subprocess (`test_execution_spawn_helper_linux.py`). Each clause has its own
 named test, not just an architecture diagram implying the composition.
+
+## Check-in and Belnap reconciliation composed with delegation, without touching spawn-helper's own contract
+
+The last piece named in the user's own sequencing: compose `CheckedInUidCgroupBackend`'s real
+check-in protocol and Belnap reconciliation into the same delegated-authority path
+`SpawnHelperBackend` and `Broker.dispatch(intent, authority=...)` already proved for real.
+
+**The first, necessary step was an architectural check, not an implementation guess:**
+`CheckedInUidCgroupBackend` cannot be composed with an unprivileged broker as it stands --
+`require_real_root_linux()` is called directly in its constructor, and its `run()` uses
+`preexec_fn=_drop_privileges` (a bare `os.setuid()` in a forked copy of the broker's own process),
+the identical constraint `siphonophore-spawn` exists to remove for the plain `uid_cgroup` class.
+Reusing it directly would have silently reintroduced root into the broker -- exactly what the user
+asked to be stopped and explained rather than worked around.
+
+**What made composing the two possible without modifying either was a fact hiding in the already-
+pinned contract:** `SH-09`/`SH-24` already define an optional nonce field and a fixed fd (5) for it
+-- built when the spawn-helper contract was originally frozen, deliberately anticipating future use,
+never exercised until now. `bootstrap.py`'s own docstring already said as much: "reading it is the
+artifact's own job... if and when it performs a check-in." Composing check-in required zero changes
+to `siphonophore-spawn.c`, `contracts/spawn_helper.md`, or `CheckedInUidCgroupBackend` -- confirmed
+`siphonophore_core` is importable from the artifact's own sanitized environment first (it is,
+editable-installed system-wide, not `PYTHONPATH`-dependent), then built
+`execution_spawn_helper_checkin.py`'s `CheckedInSpawnHelperBackend`: generates a real nonce, sends
+it through the existing nonce channel, wraps `intent.artifact_code` (mirroring, not duplicating,
+`_CHECKIN_CHILD_WRAPPER`'s shape, adapted to `bootstrap.py`'s calling convention -- `payload`/
+`NONCE_FD` arrive as globals, not argv) so the artifact performs the identical
+`identity.perform_checkin()` call the existing backend already requires. Registered under the same
+`uid_cgroup_checkin` execution class `CheckedInUidCgroupBackend` uses -- a deployment choice of
+implementation, not a new Gate/Executor/Decision concept, mirroring exactly how `SpawnHelperBackend`
+already relates to `UidCgroupBackend` under `uid_cgroup`.
+
+**A real deadlock/reap-ordering bug was found and fixed during validation, not caught by review:**
+writing the envelope+source+payload+nonce stream to the helper's stdin on a background thread (to
+avoid blocking while concurrently waiting on the check-in registry) meant that thread closed
+`proc.stdin` itself -- but `subprocess.communicate()`, called afterward from the main thread to
+collect final output, still tried to flush/close `self.stdin` internally and raised `ValueError:
+flush of closed file` *before* it finished waiting for and reaping the child. The exception
+propagated past the intended wait, so `release_ephemeral_user()` ran while the artifact process was
+still alive, and a real `userdel: user ... is currently used by process <pid>` failure surfaced
+immediately on the first real colima run -- caught by running the test for real, not by inspection.
+Fixed by clearing `proc.stdin = None` after the writer thread finishes, telling `communicate()` to
+skip stdin handling entirely rather than touch an fd it no longer owns.
+
+Validated on colima with one real, single composed execution
+(`tests/test_harness_loop_linux.py::test_delegated_effect_produces_independently_verified_and_reconciled_evidence`):
+a real `Order`, principal A's root `Authority`, a narrower `Authority` delegated to B, B's own
+`Intent` submitted through `broker.dispatch(intent, authority=authority_b)`, landing in
+`CheckedInSpawnHelperBackend` -- real uid+cgroup identity via `siphonophore-spawn`, a real,
+kernel-verified check-in (`SO_PEERCRED`) tied to that specific `execution_id`, and a real
+reconciliation result attached to the same `Effect`. The negative case
+(`test_fabricated_self_report_is_not_reconciled_as_confirmation`) proves the distinction that
+matters: B's check-in genuinely, correctly verifies (its identity is real), but its self-report
+lies about one path's content and omits a real undisclosed write -- neither reconciles as
+`corroborated`; a false or incomplete claim is refused as confirmation even when the identity behind
+it is completely genuine, which is exactly the boundary DESIGN.md section 3 exists to keep sharp.
+
+161 passed on colima (was 159), 125 passed portable, zero regressions, host confirmed clean.
+
+This closes the sequence the user laid out explicitly: unprivileged-broker `uid_cgroup` execution
+(#1), authority-aware `Broker.dispatch()` (#2), and now check-in/Belnap composition (#3) -- each
+landed as the smallest change that reused, rather than duplicated or modified, what the previous
+step had already proven. Siphonophore's claim is now, in full: a principal delegates bounded
+authority to another logical actor; that actor exercises it through the harness's ordinary public
+dispatch path; the authorization is independently re-verified before execution; the effect executes
+under a real OS identity through a privilege boundary the broker itself does not possess; and that
+execution is independently, kernel-verified and reconciled against an untrusted self-report, with
+a false claim refused as confirmation even when the identity behind it is real.

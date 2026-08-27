@@ -55,7 +55,9 @@ Today, Siphonophore demonstrates:
   channel distinct from agent self-report. `audit.py` uses
   [Belnap four-valued logic](https://en.wikipedia.org/wiki/Four-valued_logic) to preserve
   distinctions between corroborated claims, unsupported claims, observed-but-unreported activity,
-  and absence of evidence.
+  and absence of evidence. Composed with delegation and the unprivileged-broker path via
+  `CheckedInSpawnHelperBackend` — no changes to `siphonophore-spawn.c`, `contracts/spawn_helper.md`,
+  or the existing (root-requiring) `CheckedInUidCgroupBackend` were needed to do it.
 
 The complete demonstrated authority path is:
 
@@ -82,14 +84,18 @@ The complete demonstrated authority path is:
     Executor
       │
       ▼
-    real UID / cgroup boundary
+    real UID / cgroup boundary (siphonophore-spawn)
       │
       ▼
-    Effect
+    independently, kernel-verified check-in (SO_PEERCRED)
+      │
+      ▼
+    Effect + Belnap-reconciled evidence
 
-(Check-in and Belnap reconciliation are real and independently tested, but against the
-`uid_cgroup_checkin` backend directly — not yet composed into the same test as the delegation path
-above. See "Not yet implemented or integrated" below.)
+One real test (`tests/test_harness_loop_linux.py`) demonstrates this entire chain in a single
+composed execution, including a negative case: a delegate whose real check-in verifies but whose
+self-report lies about what it did reconciles as `contradiction`/`unreported_activity`, never
+`corroborated` — a genuine identity plus a false claim is still refused as confirmation.
 
 ### Not yet implemented or integrated
 

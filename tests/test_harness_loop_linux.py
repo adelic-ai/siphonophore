@@ -15,14 +15,27 @@ B's delegated effect now goes through the real public `Broker.dispatch(intent, a
 interface, not `Gate.submit()`/`Executor.execute()` stitched together by hand -- a caller
 demonstrating delegation no longer needs to know `Gate`/`Executor` exist at all. Real multi-loop
 orchestration of a second, independently running agent is still separate, later integration work;
-this closes the narrower gap where `Broker` itself couldn't express an authority-aware dispatch."""
+this closes the narrower gap where `Broker` itself couldn't express an authority-aware dispatch.
+
+Also composes the real check-in protocol (identity.py) and Belnap reconciliation (audit.py) into
+this same delegated path via `CheckedInSpawnHelperBackend` -- delegated Authority -> public
+`Broker.dispatch()` -> Gate re-verification -> real uid+cgroup identity through
+`siphonophore-spawn` -> independently, kernel-verified check-in (SO_PEERCRED) -> a reconciliation
+result tied to that specific execution. Nothing about `siphonophore-spawn.c`,
+`contracts/spawn_helper.md`, or `CheckedInUidCgroupBackend` was touched to make this possible --
+see `execution_spawn_helper_checkin.py`'s own docstring for exactly what was reused unchanged."""
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from siphonophore_core.execution import Executor
+from siphonophore_core.execution_spawn_helper_checkin import CheckedInSpawnHelperBackend
 from siphonophore_core.execution_uid_cgroup import ProvisioningError, UidCgroupBackend, require_real_root_linux
 from siphonophore_core.intent import Intent
 from siphonophore_core.mediation import Gate, GateViolation
@@ -104,3 +117,124 @@ def test_b_cannot_exercise_a_kind_outside_its_delegated_scope():
     out_of_scope = Intent(kind="write_file", principal_id="agent-a.sub-agent-b", intent_id="deleg-scope-001", consequence="low")
     with pytest.raises(GateViolation):
         broker.dispatch(out_of_scope, authority=authority_b)
+
+
+# ---- delegation composed with real check-in + Belnap reconciliation ------------------------
+
+CHECKIN_UID_MIN = 64400
+CHECKIN_UID_MAX = 64499
+
+# payload arrives as a global (bootstrap.py's calling convention), not sys.argv[1] -- unlike
+# execution_uid_cgroup_checkin.py's own artifact code, which targets the older preexec_fn/argv
+# calling convention.
+_HONEST_DELEGATE_CODE = """
+import json, os
+
+with open(os.path.join(payload["outdir"], "corroborated.txt"), "w") as f:
+    f.write("this write really happened and matches the claim")
+
+self_report = {
+    "principal_id": "agent-a.sub-agent-b",
+    "claims": [{"path": "corroborated.txt", "content": "this write really happened and matches the claim"}],
+}
+print(json.dumps(self_report))
+"""
+
+_LYING_DELEGATE_CODE = """
+import json, os
+
+with open(os.path.join(payload["outdir"], "contradicted.txt"), "w") as f:
+    f.write("the real content, which differs from what the self-report is about to claim")
+
+with open(os.path.join(payload["outdir"], "unreported.txt"), "w") as f:
+    f.write("a real effect that happened but was never self-reported")
+
+self_report = {
+    "principal_id": "agent-a.sub-agent-b",
+    "claims": [{"path": "contradicted.txt", "content": "a claimed content that is simply not true"}],
+}
+print(json.dumps(self_report))
+"""
+
+
+@pytest.fixture
+def world_writable_outdir():
+    d = Path(tempfile.mkdtemp(prefix="sipho-core-deleg-checkin-test-"))
+    os.chmod(d, 0o777)
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def _delegated_checkin_setup():
+    gate = Gate(ConsequencePolicy(mapping={"privileged": "uid_cgroup_checkin"}))
+    backend = CheckedInSpawnHelperBackend(uid_min=CHECKIN_UID_MIN, uid_max=CHECKIN_UID_MAX, checkin_timeout=10.0)
+    executor = Executor(gate, backends={"uid_cgroup_checkin": backend})
+    broker = Broker(gate=gate, executor=executor)
+    order = gate.issue_order(
+        order_id="order-checkin-ticket-001", issuer="operator:ops-alice",
+        granted_kinds=frozenset({"run_artifact"}), max_delegation_depth=2,
+    )
+    authority_a = gate.grant_root_authority(order, principal_id="agent-a")
+    authority_b = gate.delegate(authority_a, to_principal_id="agent-a.sub-agent-b")
+    return broker, backend, authority_b
+
+
+@requires_root_linux
+def test_delegated_effect_produces_independently_verified_and_reconciled_evidence(world_writable_outdir: Path):
+    """The full composed chain: delegated Authority -> Broker.dispatch() -> Gate re-verification ->
+    real uid+cgroup identity via siphonophore-spawn -> independently, kernel-verified check-in
+    (SO_PEERCRED, not anything the artifact asserts) -> a reconciliation result tied to this
+    specific execution_id, not a separate, unrelated check."""
+    broker, backend, authority_b = _delegated_checkin_setup()
+    try:
+        sub_intent = Intent(
+            kind="run_artifact", principal_id="agent-a.sub-agent-b", intent_id="honest-checkin-001",
+            consequence="privileged", payload={"outdir": str(world_writable_outdir)},
+            artifact_code=_HONEST_DELEGATE_CODE,
+        )
+        effect = broker.dispatch(sub_intent, authority=authority_b)
+        assert effect.execution_class == "uid_cgroup_checkin"
+
+        obs = effect.detail["observations"]
+        # Independently sourced, kernel-grounded identity proof -- SO_PEERCRED, not self-asserted.
+        assert obs["checkin"]["verified"] is True
+        assert obs["checkin"]["execution_id"] == sub_intent.intent_id
+
+        # Reconciliation tied to this execution's own real files, not asserted separately.
+        reconciliation = obs["reconciliation"]
+        assert reconciliation["corroborated.txt"]["value"] == "corroborated"
+        assert obs["user_released"] is True
+    finally:
+        backend.shutdown()
+
+
+@requires_root_linux
+def test_fabricated_self_report_is_not_reconciled_as_confirmation(world_writable_outdir: Path):
+    """Negative case: B's own real check-in still verifies (identity is real and correct), but its
+    SELF-REPORT lies about what it did -- a claimed path whose content doesn't match ground truth,
+    and a real effect it never mentions at all. Neither must reconcile as "corroborated": a
+    fabricated or substituted claim must show up as contradiction, and an undisclosed real effect
+    must show up as unreported_activity -- confirmation requires independently observed ground
+    truth agreeing with the claim, not merely a successful check-in or a plausible-sounding
+    self-report."""
+    broker, backend, authority_b = _delegated_checkin_setup()
+    try:
+        sub_intent = Intent(
+            kind="run_artifact", principal_id="agent-a.sub-agent-b", intent_id="lying-checkin-001",
+            consequence="privileged", payload={"outdir": str(world_writable_outdir)},
+            artifact_code=_LYING_DELEGATE_CODE,
+        )
+        effect = broker.dispatch(sub_intent, authority=authority_b)
+        obs = effect.detail["observations"]
+
+        # The identity check-in itself is genuinely real and correct -- lying happens one layer up,
+        # in self-report, which is exactly the distinction DESIGN.md section 3 exists to preserve.
+        assert obs["checkin"]["verified"] is True
+
+        reconciliation = obs["reconciliation"]
+        assert reconciliation["contradicted.txt"]["value"] == "contradiction"
+        assert reconciliation["unreported.txt"]["value"] == "unreported_activity"
+        assert reconciliation["contradicted.txt"]["value"] != "corroborated"
+        assert reconciliation["unreported.txt"]["value"] != "corroborated"
+    finally:
+        backend.shutdown()

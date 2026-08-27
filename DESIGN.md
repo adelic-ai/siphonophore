@@ -362,10 +362,14 @@ signed, auditable "no," the same shape any other policy denial already takes.
   remains open.
 - Whether broker-integrity attestation is a platform-measurement concern or a supply-chain/
   deployment-time concern — §8 names the question without answering it.
-- §3's check-in protocol and reconciliation are now wired into one execution backend
-  (`uid_cgroup_checkin`, alongside the still-unchecked `uid_cgroup`) rather than staying
-  freestanding primitives — but only there: a same_process or separate_process delegation has no
-  check-in-gated or automatically-reconciled equivalent. The open question is sharper than "should
+- §3's check-in protocol and reconciliation are now wired into the `uid_cgroup_checkin` execution
+  class via TWO backends — `CheckedInUidCgroupBackend` (`preexec_fn`, requires real root) and
+  `CheckedInSpawnHelperBackend` (`siphonophore-spawn`, unprivileged-broker-compatible) — rather than
+  staying freestanding primitives. The latter reuses `identity.py`/`audit.py` entirely unchanged,
+  and required no change to `siphonophore-spawn.c` or `contracts/spawn_helper.md`: the nonce channel
+  `SH-09`/`SH-24` already defines was simply exercised for the first time. Still true, unchanged by
+  this: a `same_process` or `separate_process` delegation has no check-in-gated or
+  automatically-reconciled equivalent. The open question is sharper than "should
   check-in be the default for delegation": execution substrate (§2: same_process | separate_process
   | uid+cgroup | container | VM) and required assurance (unverified | process-identified |
   checked-in | reconciled | externally-observed, per §5) are plausibly two orthogonal axes that
