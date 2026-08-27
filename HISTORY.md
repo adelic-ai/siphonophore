@@ -378,3 +378,78 @@ attributable agent harnesses" — true of the mechanism, but no longer the frami
 document gives for why that mechanism exists or what sits above/below it in a real deployment. The
 code built so far survives this reframing without changes; what needs updating is the conceptual
 ownership boundary DESIGN.md draws around the project, not any invariant it currently enforces.
+
+## `siphonophore-spawn`: implemented and validated for real, not just reasoned through
+
+The third and last piece of the broker-root-privilege gap moved from "interface frozen, zero code"
+to "built and validated for real on colima" in one pass. C, chosen deliberately over Python for
+this one component specifically: the whole point of `siphonophore-spawn` is to be a minimal,
+narrow, privileged trust boundary, and pulling the CPython interpreter's own startup machinery,
+import system, and stdlib surface into a root-executed binary works against that in a way developer
+convenience doesn't justify. Everything upstream and downstream of this one binary — policy,
+authority reasoning, the broker itself, the bootstrap runtime the helper hands off to once
+privilege is already dropped — stays Python, unaffected.
+
+Implementation lives in `spawn_helper/` (`siphonophore-spawn.c`, `bootstrap.py`, `Makefile`,
+`README.md`), dependency-free beyond libc: no JSON library (a small hand-rolled parser for the
+one fixed, flat envelope shape `SH-09` defines), no regex library (character-class validation
+matching `scripts/siphonophore-useradd`'s own convention exactly). Every `SH-NN` invariant in
+`contracts/spawn_helper.md` maps to a labeled block in the C source and a named test in
+`tests/test_spawn_helper_linux.py` — 16 tests, all passing for real on colima, including:
+
+- The full happy path: real uid drop (verified via `getuid()`/`geteuid()` from inside the spawned
+  artifact, not just assumed from the helper's own claim), real cgroup membership, payload passed
+  through intact.
+- `SH-25`'s read-only exposure claim, checked by having the artifact itself attempt `os.write()`
+  and `os.ftruncate()` against its source/payload fds and confirming both fail `EBADF` — not just
+  that seals were applied, but that the descriptor the artifact actually receives can't write at
+  all.
+- `SH-22`'s argv-avoidance claim, checked against the spawned process's own `/proc/self/cmdline`
+  directly, the same discipline `lab/005` established for the nonce originally — a marker value
+  planted in the payload was confirmed genuinely absent from argv, not assumed absent from design.
+- `SH-23`'s replay prevention: a second spawn attempt against an already-consumed `execution_id` is
+  refused (exit 23); a first, fresh attempt with the same identity succeeds.
+- `SH-21`'s liveness invariant, exercised with a genuinely blocked client (a held-open pipe that
+  sends a valid envelope header and then withholds the declared body, never closing) — confirmed
+  the `SIGALRM` handler actually fires at the configured bound (not sooner, not never) and exits
+  cleanly, the one code path a normal test can't reach any other way since it requires exercising a
+  real signal handler under real I/O blocking, not simulating one.
+- All ten `SH-12`..`SH-17` fail-closed conditions, each its own test asserting the exact exit code
+  that invariant is supposed to produce, not just "something failed."
+
+Also validated manually against a real, narrow sudoers grant (not automated in the pytest suite,
+matching how the `useradd`/`userdel` grant was validated earlier — provisioning system-level
+sudoers config isn't something to wire into CI casually): a genuinely unprivileged test user,
+zero password prompt via `sudo -n`, and — the specific property `SH-08` depends on — an attempt to
+invoke the helper with any extra argument at all was refused *by sudo itself*, before ever reaching
+the binary, proving the sudoers `""` argument-free syntax actually behaves as documented on this
+sudo version rather than assuming it from a template comment.
+
+**A real bug found and fixed during this pass, not just during design review:** the first
+implementation's cleanup-on-failure logic tried to `rmdir()` a cgroup leaf it had created while the
+failing helper process was itself still a live member of that leaf — cgroup v2 refuses to remove a
+non-empty `cgroup.procs`, so the `rmdir()` silently failed and the leaf leaked, discovered by
+actually running the fail-closed test battery and inspecting `/sys/fs/cgroup/siphonophore-core`
+afterward rather than trusting the exit codes alone. Fixed by moving the process back into the
+parent cgroup (`CGROUP_ROOT`, which has no controllers enabled on its own `subtree_control`, so this
+is legal) before attempting the leaf's removal — shared between the normal failure path and the
+`SIGALRM` handler via one async-signal-safe cleanup routine (hand-rolled integer-to-string instead
+of `snprintf`, which glibc does not guarantee safe inside a signal handler). Added as its own
+regression test (`test_a_failure_after_joining_the_cgroup_still_removes_the_leaf`) rather than left
+as something the fix notes describe but nothing checks going forward.
+
+Also fixed the same day, smaller and unrelated to the helper itself: `provision_cgroup()` (the
+existing, pre-helper Python path `UidCgroupBackend` still uses) never validated that `execution_id`
+was safe to use as a path component before building `{cgroup_root}/exec-{execution_id}` — a latent
+path-safety gap of the identical shape `siphonophore-spawn.c`'s own `execution_id` validation
+exists to close. Given the two now enforce the identical construction, letting them silently
+diverge on what counts as valid would be its own future bug; fixed with the same character-class
+check on the Python side, covered by a new portable test
+(`tests/test_provision_cgroup_execution_id.py`).
+
+**Still open, unchanged by any of this:** `siphonophore-spawn` is a validated, standalone mechanism
+now — it is not yet wired into an `ExecutionBackend` `Executor` actually dispatches to. That
+integration (a new backend, or an unprivileged-mode branch of `UidCgroupBackend`) is separate,
+later work. Also unchanged: what this helper does and does not prove about authorization — see
+`contracts/spawn_helper.md`'s `SH-23` section and DESIGN.md §8 for why that's a deliberate scope
+boundary, not an oversight.

@@ -24,3 +24,20 @@
 
 Cmnd_Alias SIPHONOPHORE_CORE = <REPO_PATH>/scripts/siphonophore-useradd, <REPO_PATH>/scripts/siphonophore-userdel
 <BROKER_USER> ALL=(root) NOPASSWD: SIPHONOPHORE_CORE
+
+# siphonophore-spawn (contracts/spawn_helper.md, SH-08): a SEPARATE Cmnd_Alias, deliberately, not
+# folded into SIPHONOPHORE_CORE above -- SH-08 requires this one be invocable with NO arguments at
+# all, which sudoers expresses with the trailing "" (an empty string immediately after the command
+# path means "this command may be run with no arguments," not "any arguments"; a bare path with
+# nothing after it means the opposite -- any arguments allowed). Verify this actually behaves that
+# way on your sudo version with `sudo -l` before trusting it; sudoers argument-matching syntax has
+# had real version-to-version differences and this project's own discipline is to validate claims
+# like this for real, not assume them from documentation.
+#
+# Installed path, not a repo-relative one: SH-26 requires the helper binary be root-owned and not
+# writable by <BROKER_USER> -- `make -C spawn_helper install` (run as root) installs it to
+# /usr/local/libexec/siphonophore-spawn with mode 0711, root:root. Do not grant sudo on a
+# repo-checkout copy of this binary; the checkout is typically owned by a non-root deploy/dev user,
+# which would let that user replace the "privileged" binary sudo executes.
+Cmnd_Alias SIPHONOPHORE_SPAWN = /usr/local/libexec/siphonophore-spawn ""
+<BROKER_USER> ALL=(root) NOPASSWD: SIPHONOPHORE_SPAWN

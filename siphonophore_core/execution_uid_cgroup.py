@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -105,7 +106,17 @@ def release_ephemeral_user(username: str) -> None:
         raise ProvisioningError(f"userdel failed (rc={result.returncode}): {result.stderr.strip()}")
 
 
+# execution_id becomes a cgroup directory component below -- the same path-safety validation
+# spawn_helper/siphonophore-spawn.c independently applies to the identical construction (SH-17),
+# kept in sync deliberately: a value this function would reject but the C helper would accept (or
+# vice versa) is exactly the kind of divergence that turns into a real gap later. Matches
+# scripts/siphonophore-useradd's own charset choice too.
+_EXECUTION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
+
+
 def provision_cgroup(cgroup_root: Path, execution_id: str) -> Path:
+    if not _EXECUTION_ID_RE.match(execution_id):
+        raise ProvisioningError(f"execution_id fails path-safety check: {execution_id!r}")
     cgroup_root.mkdir(parents=True, exist_ok=True)
     cg = cgroup_root / f"exec-{execution_id}"
     cg.mkdir(parents=True, exist_ok=False)

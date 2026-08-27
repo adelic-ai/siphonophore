@@ -297,19 +297,21 @@ about itself at startup. Which of these it actually is has not been decided here
   broker. **Still fully open, but the interface is now pinned:** the `preexec_fn` privilege drop
   that spawns the artifact process under its target uid still requires the *forking* process to
   already be root — no unprivileged broker can perform that step itself yet.
-  `contracts/spawn_helper.md` (PINNED) freezes the interface for the narrowly-privileged helper
-  that will close this — an exact-argument-free `sudo` invocation, one multiplexed stdin stream
-  crossing that boundary, genuinely separate fds past it — but no implementation exists yet.
-  Nothing else should be built against that contract until it's been reviewed for any capability it
-  might accidentally grant the broker. Until this closes, no broker can run the `uid_cgroup` tiers
-  while staying unprivileged itself, regardless of the other two pieces being done. **What this
-  helper explicitly does not, and structurally cannot, close: whether the broker's own request was
-  ever authorized by `Gate.submit()` in the first place.** The helper's `SH-23` invariant provides
-  execution-identity consistency and replay prevention (at most one spawn per `execution_id`), not
-  an independent attestation of Gate authorization — the helper has no access to the Gate's own
-  secret, and giving it one would expand its trusted surface rather than narrow it. This is the same
-  gap this section already names: a broker whose own process is compromised already holds the
-  Gate's secret and needs no help from `siphonophore-spawn` to mint a valid `Decision` for anything
-  it wants. **Authorization belongs above the execution substrate** — closing this for real is a
-  question of who attests the broker's own integrity, not something a spawn helper can be made to
-  answer by construction.
+  `contracts/spawn_helper.md` (PINNED) defines the narrowly-privileged helper that closes this — an
+  exact-argument-free `sudo` invocation, one multiplexed stdin stream crossing that boundary,
+  genuinely separate fds past it. **Implemented and validated for real on colima**
+  (`spawn_helper/siphonophore-spawn.c`, `tests/test_spawn_helper_linux.py`) — every `SH-NN`
+  invariant has a passing test exercised against a genuinely unprivileged `sudo`-mediated
+  invocation, not just reasoned through. Still open: `siphonophore-spawn` is not yet wired into an
+  `ExecutionBackend` that `Executor` actually dispatches to — until that integration lands, no
+  broker can run the `uid_cgroup` tiers through it while staying unprivileged itself, regardless of
+  the mechanism itself being done. **What this helper explicitly does not, and structurally cannot,
+  close: whether the broker's own request was ever authorized by `Gate.submit()` in the first
+  place.** The helper's `SH-23` invariant provides execution-identity consistency and replay
+  prevention (at most one spawn per `execution_id`), not an independent attestation of Gate
+  authorization — the helper has no access to the Gate's own secret, and giving it one would expand
+  its trusted surface rather than narrow it. This is the same gap this section already names: a
+  broker whose own process is compromised already holds the Gate's secret and needs no help from
+  `siphonophore-spawn` to mint a valid `Decision` for anything it wants. **Authorization belongs
+  above the execution substrate** — closing this for real is a question of who attests the broker's
+  own integrity, not something a spawn helper can be made to answer by construction.

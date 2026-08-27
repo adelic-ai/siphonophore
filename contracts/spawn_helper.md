@@ -1,10 +1,13 @@
 # Contract: `siphonophore-spawn` — the privileged helper that closes the broker-root-privilege gap
 
-**Status:** PINNED, 2026-08-26 (amended twice same day after two rounds of capability-audit review —
-see "Amendment history" at the end). This document defines the interface and the invariants it enforces. **No
-implementation exists yet.** Nothing here should be built against until this document itself is
-reviewed and any capability it grants the broker — intentional or accidental — is confirmed to be
-exactly what was meant.
+**Status:** PINNED and IMPLEMENTED, 2026-08-27. Amended twice on 2026-08-26 after two rounds of
+capability-audit review (see "Amendment history" at the end), then implemented in C
+(`spawn_helper/siphonophore-spawn.c`) and validated for real on colima — every `SH-NN` invariant
+below has a corresponding automated test in `tests/test_spawn_helper_linux.py`, run for real as
+root against a genuinely unprivileged `sudo`-mediated invocation, not just reasoned through. See
+`HISTORY.md`'s "siphonophore-spawn: implemented and validated for real" entry for what was actually
+exercised, including one real bug the implementation pass found and fixed (a cgroup-cleanup
+ordering issue not visible from reading the contract alone).
 
 ## Why this exists
 
@@ -381,7 +384,7 @@ originally confirmed the nonce's own argv-avoidance for real rather than assumin
 
 ## Next step
 
-Review this document. Confirm nothing here grants the broker a capability that wasn't consciously
-intended. Only after that: implement, with each `SH-NN` invariant getting its own named test before
-this contract's status can move from PINNED (interface frozen) to whatever this project's
-convention for "implemented and validated for real" ends up being.
+Implemented. What remains is integration: `siphonophore-spawn` is not yet wired into an
+`ExecutionBackend` that `Executor` actually dispatches to -- today it's a standalone, validated
+mechanism, invoked manually or from tests, not from the broker's own real execution path. Wiring it
+in (a new backend, or an unprivileged-mode branch of `UidCgroupBackend`) is separate, later work.
