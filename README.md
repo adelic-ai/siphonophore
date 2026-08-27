@@ -1,109 +1,413 @@
 # siphonophore
 
-SDK for mediated, attributable agent execution — every effect-producing action, and every
-derivation of delegated authority, passes through one cryptographically-bound `Gate`, with real
-OS-level execution identity and independent, kernel-verified ground truth.
+**Mediated, attributable execution for agent systems.**
+
+Siphonophore is an experimental SDK and reference harness for making authority, execution identity,
+and machine effects independently checkable across agent execution boundaries.
+
+It separates the authority to perform an action from the execution requirements under which that
+action may run, and cryptographically binds both into the decision consumed by the execution layer.
+
+## Current state — August 2026
+
+Siphonophore is under active development. Its core authority-to-execution path is implemented and
+demonstrated end-to-end against real Linux OS boundaries. It is not yet a complete multi-agent,
+multi-model harness.
+
+Today, Siphonophore demonstrates:
+
+- **Core mediation** — `Intent → Gate → Decision → Executor → Effect`. Security-bearing,
+  dispatch-relevant fields including intent kind, execution class, artifact digest, and
+  authority/order provenance are cryptographically bound into the `Decision`. `Executor`
+  independently re-verifies the `Decision` and artifact rather than trusting that an upstream
+  component already checked them.
+
+- **Delegated authority** — `Order → Authority → delegated Authority`. One principal can derive
+  constrained authority for another. At each derivation, `Gate` independently verifies the parent,
+  enforces scope attenuation and delegation depth, and preserves the originating `order_id`.
+  Exercise of delegated authority is independently re-verified before a `Decision` is minted.
+
+- **Real OS-level execution identity** — the `uid_cgroup` / `uid_cgroup_checkin` backends provision
+  a genuine ephemeral system user and real cgroup v2 leaf per execution. Check-in independently
+  establishes the spawned process's identity through the kernel (`SO_PEERCRED`) rather than
+  accepting an identity asserted by the process itself.
+
+- **Execution requirements bound to authorization** — policy can currently select among
+  `same_process`, `separate_process`, `uid_cgroup`, and `uid_cgroup_checkin`. The selected
+  execution class is cryptographically bound into the resulting `Decision`, preventing an
+  authorized execution requirement from being silently substituted after authorization.
+
+- **Negative enforcement** — tests exercise fabricated and spliced authority, scope expansion,
+  principal impersonation, artifact substitution, forged or modified Decisions, replay attempts,
+  and execution-class tampering. These cases are refused rather than merely logged.
+
+- **`siphonophore-spawn`** — a minimal, dependency-free C helper for crossing the narrow privileged
+  boundary required by UID/cgroup execution without requiring the entire broker to run as root.
+  The helper is implemented and independently validated against a real Linux privilege boundary.
+
+- **Independent evidence and reconciliation** — execution check-in and OS observations provide a
+  channel distinct from agent self-report. `audit.py` uses Belnap four-valued logic to preserve
+  distinctions between corroborated claims, unsupported claims, observed-but-unreported activity,
+  and absence of evidence.
+
+The complete demonstrated authority path is:
+
+    Order
+      │
+      ▼
+    Authority A
+      │
+      │ Gate.delegate()
+      ▼
+    Authority B
+      │
+      │ exercised by B
+      ▼
+    Intent
+      │
+      ▼
+    Gate
+      │
+      ▼
+    Decision
+      │
+      ▼
+    Executor
+      │
+      ▼
+    real UID / cgroup boundary
+      │
+      ▼
+    Effect
+
+(Check-in and Belnap reconciliation are real and independently tested, but against the
+`uid_cgroup_checkin` backend directly — not yet composed into the same test as the delegation path
+above. See "Not yet implemented or integrated" below.)
+
+### Not yet implemented or integrated
+
+- `Broker` / `CognitiveLoop` do not yet expose authority-aware dispatch. Exercising delegated
+  `Authority` currently means calling `Gate.submit(intent, authority=...)` directly.
+- There is not yet a second independently running, model-driven agent loop exercising delegated
+  authority. Delegation is real at the authority/Gate/Executor layer but is not yet live
+  multi-agent orchestration.
+- `siphonophore-spawn` is independently validated but is not yet connected to the normal
+  `Executor` dispatch path.
+- Container and VM execution substrates are not implemented.
+- Platform attestation and production credential delivery are not implemented.
+- `Scope` currently constrains intent kinds and delegation depth. Resource- and payload-level
+  constraints are deliberately deferred.
+- Multi-model support currently exists at the model-interface level; orchestration of multiple
+  live model providers is not yet implemented.
+
+`DESIGN.md` contains the complete current architecture, guarantees, trust assumptions, and open
+questions. The claims above describe what is implemented today, not everything the architecture
+may eventually support.
 
 ## Why this exists
 
-Existing agent SDKs (Strands and others) unify how a tool call and a sub-agent delegation are
-*invoked*, but not how they're *authorized* — a sub-agent still runs in-process, sharing the
-parent's uid/pid, with no independent way to attribute what it actually did versus what it claims
-to have done. That gap matters more as agentic systems take on higher-stakes, less-supervised work
-(CI/CD automation, delegated sub-tasks, unattended runs) — exactly the direction security
-expectations for these systems are heading. siphonophore is not a framework for building agents
-faster; it's one that makes an agent's actions structurally impossible to leave unattributed.
+Siphonophore began with a simple question about multi-agent execution.
 
-## Current state
+Agent SDKs such as Strands provide useful abstractions for composing and orchestrating multiple
+agents. Those agents are logical identities inside an application, however, and are not necessarily
+independent execution identities at the operating-system boundary.
 
-Real and validated — not just written, exercised for real including on a genuine root Linux host,
-not against fakes:
+In the Strands `Agent.as_tool()` path examined during this project, a parent and its sub-agents can
+execute in-process under the same Unix process and UID. Strands can distinguish those agents at the
+framework level while the operating system sees their machine effects as originating from the same
+security principal.
 
-- **Core mediation** — `Intent → Gate → Decision → Executor → Effect`. Every dispatch-relevant
-  field (kind, execution class, artifact digest, and now authority/order provenance) is
-  cryptographically bound and independently re-verified at each step, never trusted because an
-  upstream check already accepted it.
-- **Delegated authority** — `Order`/`Authority`/`Scope` (`siphonophore_core/authority.py`): one
-  principal deriving constrained authority for another, checked against a real originating grant,
-  never exceeding what the parent held, independently re-verified at the point it's exercised.
-  Demonstrated end-to-end through a real OS-backed execution tier, not only as isolated unit tests.
-- **Real OS-level execution identity** — the `uid_cgroup`/`uid_cgroup_checkin` backends provision a
-  genuine, ephemeral system user and a real cgroup v2 leaf per execution; check-in independently
-  verifies a spawned process's identity via the kernel (`SO_PEERCRED`), never anything the process
-  asserts about itself.
-- **`siphonophore-spawn`** (`spawn_helper/`) — a minimal, dependency-free C helper that lets an
-  unprivileged broker use the `uid_cgroup` tiers without running as root itself. Built and
-  independently validated (16 real tests on a genuine Linux host). **Not yet wired into the
-  `Executor` dispatch path** — see below.
-- **Belnap reconciliation** (`audit.py`) — self-report vs. independently-observed ground truth,
-  compared with four-valued logic rather than a fuzzy boolean match.
+Conceptually, the framework can distinguish:
 
-Honestly not done yet:
+    Agent A ─┐
+             ├── agent runtime
+    Agent B ─┘
 
-- `Broker`/`CognitiveLoop` — the live, model-driven harness — don't expose authority-aware
-  dispatch. Exercising a delegated `Authority` today means calling `Gate.submit(intent,
-  authority=...)` directly; it's demonstrated in tests, not yet reachable from `examples/repl.py`.
-- No real second, independently-running agent loop exists yet — delegation is proven at the
-  `Gate`/`Executor` level, not yet orchestrated between two live model-driven agents.
-- `siphonophore-spawn` is a standalone, validated mechanism; no `ExecutionBackend` calls it yet.
-- `container`/`VM` execution tiers, platform attestation, real credential delivery, and multi-model
-  support beyond `Model` being swappable in principle — none of these exist.
+while the operating system may see only:
 
-`DESIGN.md`'s "Explicitly open" section names every one of these, and more, precisely — read it
-before assuming a guarantee holds that isn't actually enforced yet.
+    agent runtime ── uid 1000 ── machine effects
 
-**Where this is headed:** a small, durable authority-mediation and execution-identity layer that
-something else can sit on top of or embed — not a general-purpose agent framework competing with
-existing agent SDKs on features. The scope stays deliberately narrow: the security decision between
-an agent's intent and its execution, not the runtime around it.
+That distinction matters when the question changes from:
+
+> Which agent does the framework say acted?
+
+to:
+
+> Which agent can be independently established to have caused the machine effect?
+
+Once multiple logical agents collapse into the same machine identity, independently determining
+what **one particular agent** actually did becomes difficult. The framework can record that Agent B
+invoked a tool, delegated work, or produced a result, but that evidence originates inside the same
+application trust domain.
+
+An external observer may therefore be able to establish that:
+
+    the shared runtime performed effect X
+
+without being able to independently establish that:
+
+    Agent B performed effect X
+
+That makes strong agent-level **attribution, confirmation, and attestation** difficult. An agent can
+report what it did, but without an independently grounded execution identity there may be nothing
+external against which to confirm that claim at agent granularity.
+
+Likewise, establishing that a shared runtime executed something does not by itself establish which
+logical agent caused it, whether that agent possessed legitimate authority, or whether that
+authority was legitimately derived from the principal that delegated the work.
+
+Tracing, hooks, logs, or agent-specific instrumentation can be added around a shared runtime, but
+those mechanisms then become part of the trust argument themselves. They must correctly distinguish
+identities that the operating system does not distinguish, remain complete across every
+effect-producing path, and resist interference or bypass by the runtime they are intended to
+describe.
+
+The security property is being reconstructed after the identities have already collapsed.
+
+Siphonophore explores the opposite approach:
+
+> **Preserve authority and establish execution identity before an effect occurs, so those
+> properties do not have to be reconstructed afterward.**
 
 ## Architecture
 
-```
-Order → Authority ──┐
-       (delegate)   │
-                     ▼
-Principal → Intent → Gate → Decision → Executor → Effect
-```
+Siphonophore treats two properties as deliberately independent:
 
-Two related but distinct flows through the same `Gate`:
+    AUTHORITY                         EXECUTION
+    ---------                         ---------
+    What may be done?                 How must it execute?
+    Who holds that authority?         What isolation is required?
+    Where did it derive from?         What execution identity is required?
+    What may be delegated?            What substrate satisfies the requirement?
 
-- **Exercising authority** — every effect-producing action (a tool call, a delegated sub-agent's
-  own action, an external fetch) is the same kind of thing: an `Intent` submitted to `Gate`, which
-  mints a cryptographically-bound `Decision` before `Executor` dispatches it to an execution-class
-  backend.
-- **Granting authority** — a *distinct* `Gate` operation (`issue_order`/`grant_root_authority`/
-  `delegate` — not an `Intent` kind): one principal deriving constrained `Authority` for another,
-  narrower than what it itself holds, traceable to a real originating `Order`. An `Intent` is an
-  *attempted exercise* of authority, never its source — the two are deliberately not the same
-  primitive. An earlier design draft treated delegation as just another `Intent` kind; that was a
-  category error, corrected before it shipped (see `HISTORY.md`).
+The distinction matters.
 
-- **`siphonophore_core/`** — `Intent`/`Effect`, `Order`/`Authority`/`Scope` (`authority.py`),
-  `Policy`/`Decision`/`Gate` (`mediation.py`), `Executor` and its execution-class backends
-  (`same_process`, `separate_process`, `uid_cgroup`, `uid_cgroup_checkin`), `identity` (check-in
-  verification: nonce + `SO_PEERCRED`), `audit` (Belnap four-valued reconciliation between
-  self-report and independently-observed ground truth).
-- **`spawn_helper/`** — `siphonophore-spawn`, a minimal C privileged helper letting an unprivileged
-  broker use the `uid_cgroup` tiers without running as root; its pinned wire interface lives in
+A child agent requiring stronger isolation than its parent has not received greater authority; it
+may simply be performing work with a different risk profile.
+
+Likewise, an agent does not need to permanently "live in a VM," "live in a container," or execute
+under one fixed isolation tier. Execution requirements can follow the particular authorized action.
+
+The architecture therefore looks roughly like:
+
+    Order
+      │
+      ▼
+    Authority A
+      │
+      │ Gate.delegate()
+      ▼
+    Authority B
+    (attenuated Scope)
+      │
+      │ exercised by
+      ▼
+    Intent
+      │
+      ▼
+    Gate
+      │
+      ├── verify authority
+      ├── evaluate policy
+      └── select execution requirement
+      │
+      ▼
+    Decision
+      │
+      ├── authority provenance
+      ├── authorized effect
+      ├── artifact identity
+      └── execution requirement
+      │
+      ▼
+    Executor
+      │
+      ├── independently verify Decision
+      ├── independently verify artifact
+      └── dispatch only to authorized substrate
+      │
+      ▼
+    Execution substrate
+      │
+      ▼
+    Effect + independent evidence
+
+### Granting authority
+
+`issue_order`, `grant_root_authority`, and `delegate` establish and derive authority.
+
+Delegation is not an `Intent` kind.
+
+`Gate` independently verifies parent authority before deriving child `Authority`, constrains the
+resulting `Scope`, enforces delegation depth, and carries the originating `order_id` forward.
+
+The child `Authority` is a Gate attestation to the derivation checks performed when it was minted.
+It does not independently reconstruct its entire ancestry.
+
+### Exercising authority
+
+An `Intent` represents a principal attempting to exercise authority it holds.
+
+`Gate.submit()` independently verifies the supplied `Authority`, confirms that it belongs to the
+principal exercising it, checks the requested operation against its `Scope`, evaluates policy, and
+mints a cryptographically bound `Decision`.
+
+`Executor` then independently verifies that `Decision` before allowing an execution backend to
+produce the effect.
+
+An `Intent` is therefore an **exercise of authority, never its source**.
+
+This distinction was learned experimentally. An earlier design treated delegation as another
+effect-producing `Intent` and attempted to prove delegation by sending it through the same
+mediation primitive as a tool call.
+
+That demonstrated repeated mediation, but it did not establish that the delegate actually
+possessed authority derived from the delegator.
+
+`Order` / `Authority` / `Scope` replace that model.
+
+### Execution requirements
+
+Authority and execution isolation remain orthogonal:
+
+    Intent
+      │
+      ├── Authority / Scope ──► may this happen?
+      │
+      └── consequence/policy ─► how must it execute?
+                                      │
+                                      ▼
+                               execution class
+
+The selected execution class is bound into the same `Decision` as the authorization. A caller
+therefore cannot obtain authorization for one execution requirement and silently dispatch the
+effect through another.
+
+Today, Siphonophore implements:
+
+    same_process
+         │
+    separate_process
+         │
+      uid_cgroup
+         │
+    uid_cgroup_checkin
+
+The architecture deliberately does not make those particular substrates part of the authority
+model.
+
+Future execution backends may include containers, VMs, or other substrates without changing what
+`Order`, `Authority`, `Intent`, or `Decision` mean.
+
+That leaves room for execution requirements to scale with the particular work being performed:
+
+    narrow / low-consequence work
+                │
+                ▼
+             process
+
+    stronger execution identity
+                │
+                ▼
+           UID / cgroup
+
+    stronger containment
+                │
+                ▼
+            container
+             (future)
+
+    stronger isolation
+                │
+                ▼
+               VM
+             (future)
+
+These are illustrative policy choices, not fixed Siphonophore mappings.
+
+The architectural property is that the execution requirement belongs to the authorized action and
+can be independently enforced at the execution boundary.
+
+This also leaves the architecture open to heterogeneous agent systems: different agents may be
+backed by different models, and different actions by those agents may require different execution
+substrates. Those capabilities are not all implemented today; the separation in the architecture
+is intended to avoid making them require a redesign later.
+
+### Trust boundaries
+
+The central rule is:
+
+> **Whenever something accepted as safe is consumed downstream with greater authority, identify
+> that handoff explicitly and make the security-bearing property independently checkable where
+> practical.**
+
+That is why `Executor` does not merely trust that `Gate` previously verified a request.
+
+It verifies the `Decision` again.
+
+That is why artifact identity is not merely recorded when authorization occurs.
+
+It is recomputed before execution.
+
+That is why execution check-in does not accept a principal identity reported by the spawned
+process.
+
+It obtains the peer identity from the kernel.
+
+And that is why delegated authority is not accepted merely because a caller supplies an authority
+identifier.
+
+`Gate` verifies the actual parent `Authority` object before deriving another one.
+
+The objective is not to eliminate trust. It is to make important trust boundaries explicit and to
+avoid relying on an upstream assertion where an independent check can be made at the point that
+assertion becomes security-critical.
+
+### Independent evidence
+
+Agent self-report and machine observation are intentionally separate evidence channels.
+
+An agent may claim:
+
+    "I performed effect X"
+
+while an independent execution boundary may observe:
+
+    principal B performed machine effect X
+
+Neither observation is silently substituted for the other.
+
+Siphonophore's audit layer uses Belnap four-valued logic to preserve the distinction:
+
+| Agent claim | OS observation | State |
+|---|---|---|
+| yes | yes | corroborated |
+| yes | no | unsupported claim |
+| no | yes | unreported effect |
+| no | no | no evidence |
+
+The purpose is not to make the agent transcript irrelevant. It is to avoid treating the agent's
+description of its own behavior as independent evidence of that behavior.
+
+## Repository shape
+
+- **`siphonophore_core/`** — `Intent` / `Effect`, `Order` / `Authority` / `Scope`,
+  `Policy` / `Decision` / `Gate`, `Executor` and execution-class backends, execution identity,
+  check-in, and audit/reconciliation.
+- **`spawn_helper/`** — `siphonophore-spawn`, the minimal C privileged helper for crossing the
+  narrow privilege boundary required by UID/cgroup execution. Its pinned interface lives in
   `contracts/spawn_helper.md`.
-- **`scripts/`** — privilege-separated `useradd`/`userdel` wrapper scripts and sudoers templates
-  the broker needs to stay unprivileged.
-- **`siphonophore_harness/`** — a minimal cognitive loop (prompt → completion → parse intent →
-  dispatch → feed back), a real Anthropic-backed `Model`, and the system prompt that teaches a
-  model the intent protocol.
-- **`examples/repl.py`** — an interactive script driving a real model through the harness.
-
-Full design is in `DESIGN.md`. `HISTORY.md` holds the narrative of how it was built, if useful,
-but isn't required reading to use this.
+- **`scripts/`** — privilege-separated account-management wrappers and sudoers templates.
+- **`siphonophore_harness/`** — the current minimal cognitive loop, model interface,
+  Anthropic-backed model implementation, intent parsing, and broker.
+- **`examples/repl.py`** — interactive live-model reference harness.
 
 ## Requirements
 
 - Python ≥ 3.10
-- Real root on real Linux (with cgroup v2) for the `uid_cgroup`/`uid_cgroup_checkin` execution
-  tiers and their tests — everything else is portable.
-- A C11-capable `cc` only if you're building `spawn_helper/siphonophore-spawn` — optional, not
-  needed for the Python SDK or its own test suite.
+- Real root on real Linux with cgroup v2 for the `uid_cgroup` / `uid_cgroup_checkin` execution
+  tiers and their tests. Everything else is portable.
+- A C11-capable `cc` only when building `spawn_helper/siphonophore-spawn`.
 
 ## Installation
 
@@ -112,7 +416,7 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-For the real-model harness (`examples/repl.py`, `AnthropicAPIModel`):
+For the real-model reference harness:
 
 ```bash
 .venv/bin/pip install -e ".[anthropic]"
@@ -126,13 +430,11 @@ export ANTHROPIC_API_KEY=sk-...
 .venv/bin/python -m pytest -v
 ```
 
-Tests are split by what they need:
+Portable tests require no special privileges.
 
-- Portable tests run anywhere and need nothing extra.
-- Tests marked `linux_root_only` need real root on real Linux with cgroup v2 (they're skipped
-  automatically everywhere else) — real `useradd`/cgroup provisioning, real privilege drops, real
-  concurrent check-ins over a Unix socket, and (for `spawn_helper/`) a real compile-and-run of the
-  privileged C helper. No portion of this is mocked or simulated.
+Tests marked `linux_root_only` require real root on real Linux with cgroup v2. They exercise real
+system-user provisioning, cgroups, privilege drops, concurrent Unix-socket check-ins, kernel
+identity verification, and the privileged C helper rather than mocked equivalents.
 
 ## Running the live harness
 
@@ -140,10 +442,19 @@ Tests are split by what they need:
 .venv/bin/python examples/repl.py --model <a current Anthropic model id>
 ```
 
-Type messages at the prompt; each one is a real turn — model call → intent parsing → Gate →
-Executor. Pass `--verbose` to also see the raw completion and `Effect` detail instead of just the
-model's conversational reply. This drives the authority-less path only (see "Current state" above)
-— there's no delegation demo here yet.
+Each turn drives a real model call through intent parsing, `Gate`, and `Executor`.
+
+The current live harness uses the authority-less path. Authority-aware multi-agent orchestration is
+not yet exposed through `Broker` / `CognitiveLoop`; see **Current state** above.
+
+## Documentation
+
+- **`DESIGN.md`** — current architecture, guarantees, trust boundaries, assumptions, and explicitly
+  open questions.
+- **`HISTORY.md`** — experiments, failures, corrections, and the reasoning by which the current
+  architecture was reached.
+- **`contracts/`** — pinned contracts for narrow security-critical boundaries whose implementations
+  remain subordinate to the contract.
 
 ## License
 
