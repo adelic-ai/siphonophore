@@ -46,7 +46,8 @@ Today, Siphonophore demonstrates:
   The helper is implemented and independently validated against a real Linux privilege boundary.
 
 - **Independent evidence and reconciliation** — execution check-in and OS observations provide a
-  channel distinct from agent self-report. `audit.py` uses Belnap four-valued logic to preserve
+  channel distinct from agent self-report. `audit.py` uses
+  [Belnap four-valued logic](https://en.wikipedia.org/wiki/Four-valued_logic) to preserve
   distinctions between corroborated claims, unsupported claims, observed-but-unreported activity,
   and absence of evidence.
 
@@ -94,7 +95,9 @@ above. See "Not yet implemented or integrated" below.)
 - `siphonophore-spawn` is independently validated but is not yet connected to the normal
   `Executor` dispatch path.
 - Container and VM execution substrates are not implemented.
-- Platform attestation and production credential delivery are not implemented.
+- Platform attestation and production credential delivery are not implemented — including any
+  execution-specific identity mechanism (SPIFFE/SPIRE, JWT+Vault, or otherwise); see "Credential
+  and identity delivery" below for the architectural direction, not a built mechanism.
 - `Scope` currently constrains intent kinds and delegation depth. Resource- and payload-level
   constraints are deliberately deferred.
 - Multi-model support currently exists at the model-interface level; orchestration of multiple
@@ -333,13 +336,56 @@ backed by different models, and different actions by those agents may require di
 substrates. Those capabilities are not all implemented today; the separation in the architecture
 is intended to avoid making them require a redesign later.
 
+### Credential and identity delivery
+
+Execution requirements determine how an effect must execute. A related, deliberately separate
+question is what machine identity or credentials that particular authorized execution needs to act
+on anything beyond the local host — an API call, a cloud resource, a downstream service.
+
+    Authority
+        │
+        ▼
+      Intent
+        │
+        ▼
+       Gate
+        │
+        ▼
+     Decision
+        │
+        ├── execution requirement
+        └── credential / identity requirement
+                    │
+                    ▼
+             execution substrate
+                    │
+                    ▼
+        execution-specific credentials
+
+This is architectural direction, not a built mechanism — nothing below is implemented today. The
+intended property is that credentials follow the specific authorized execution rather than being
+ambient credentials every agent in a shared harness inherits merely by running inside it. A
+narrowly scoped, structured workload might eventually receive a SPIFFE/SPIRE-issued workload
+identity; a more free-form agent workload might instead need short-lived credentials issued as a
+JWT through Vault. Neither technology is committed to here — the specific mechanism matters far
+less than the property: credential scope should be bound to what a specific execution was actually
+authorized to do, not inherited from whatever process happens to be running the agent.
+
+This keeps the three questions this design treats separately genuinely separate, rather than
+letting a fourth concern quietly attach itself to one of the existing three:
+
+- **Authority scope** — what the principal may do.
+- **Execution requirement** — how the effect must execute.
+- **Credential/identity delivery** — what machine identity or narrowly scoped credentials that
+  particular authorized execution needs.
+
 ### Trust boundaries
 
 The central rule is:
 
 > **Whenever something accepted as safe is consumed downstream with greater authority, identify
 > that handoff explicitly and make the security-bearing property independently checkable where
-> practical.**
+> practical.**[^trusted-enough]
 
 That is why `Executor` does not merely trust that `Gate` previously verified a request.
 
@@ -459,3 +505,7 @@ not yet exposed through `Broker` / `CognitiveLoop`; see **Current state** above.
 ## License
 
 Apache 2.0 — see `LICENSE`.
+
+[^trusted-enough]: Adapted from Elad Meged, *Trusted Enough to Run*, Black Hat USA 2026. No stable
+    official session/presentation URL is available in this project's materials; cited by name
+    rather than link.
