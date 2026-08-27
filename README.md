@@ -423,7 +423,9 @@ while an independent execution boundary may observe:
 
 Neither observation is silently substituted for the other.
 
-Siphonophore's audit layer uses Belnap four-valued logic to preserve the distinction:
+Siphonophore's audit layer uses
+[Belnap four-valued logic](https://en.wikipedia.org/wiki/Four-valued_logic) to preserve the
+distinction:
 
 | Agent claim | OS observation | State |
 |---|---|---|
