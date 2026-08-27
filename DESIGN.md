@@ -210,6 +210,19 @@ part of the original claim that was actually correct. Only after both this and t
 bypassed proof above are demonstrated, not merely asserted, does any of this get formalized into a
 public SDK API.
 
+**Both are now demonstrated, not merely stated as the requirement.** One composed execution
+(`tests/test_harness_loop_linux.py`) exercises the corrected requirement in full: a delegated,
+scope-bounded `Authority` → `Broker.dispatch()` → `Gate` re-verification → `Executor` → an
+unprivileged broker crossing a narrow privileged spawn boundary (`siphonophore-spawn`) → real
+uid+cgroup execution → kernel-verified check-in (`SO_PEERCRED`) → reconciliation against an
+untrusted self-report. The negative cases are part of the proof, not a separate concern: scope
+expansion is refused, artifact substitution is refused before the privileged boundary ever runs,
+and a genuinely authentic identity's false self-report still refuses to reconcile as confirmation.
+What this does *not* yet demonstrate: a second, independently running `CognitiveLoop` actually
+producing the delegated `Intent` — see §9's "Explicitly open" notes. That is harness/product
+capability, not a gap in what this section requires proven; the requirement above is stated in
+terms of authority and mediation, not in terms of how many live agent loops exist.
+
 ## §8 — Platform attestation is a separate, lower layer than execution identity
 
 Everything in §2 and §3 — a provisioned uid, a cgroup, a check-in protocol verified by the kernel —

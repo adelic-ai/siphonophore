@@ -10,9 +10,21 @@ action may run, and cryptographically binds both into the decision consumed by t
 
 ## Current state — August 2026
 
-Siphonophore is under active development. Its core authority-to-execution path is implemented and
-demonstrated end-to-end against real Linux OS boundaries. It is not yet a complete multi-agent,
-multi-model harness.
+**Siphonophore now demonstrates its central architectural claim end to end**, against real Linux OS
+boundaries, not just as separately-validated primitives:
+
+    delegated bounded Authority → Broker.dispatch() → Gate re-verification → Executor →
+    unprivileged broker crossing a narrow privileged spawn boundary → real UID/cgroup execution →
+    kernel-verified SO_PEERCRED check-in → reconciliation against untrusted self-report
+
+The negatives are part of this claim, not an appendix: out-of-scope delegated authority is refused,
+artifact substitution is refused before the privileged execution boundary ever runs, and a
+genuinely authentic execution identity lying about what it did does not become corroborated merely
+because its identity is real.
+
+It is not yet a complete multi-agent, multi-model harness — no second, independently running agent
+loop exists yet. That's a harness/product capability, not a missing piece of the security
+architecture: the thesis above is demonstrated without it.
 
 Today, Siphonophore demonstrates:
 
