@@ -58,7 +58,26 @@ class Authority:
 
     `order_id` is inherited unchanged from `parent_authority_id`'s own order (or is this
     Authority's own grounding Order, if `parent_authority_id` is None) -- see Gate.delegate()'s
-    docstring for exactly what this field does and does not prove."""
+    docstring for exactly what this field does and does not prove.
+
+    **Explicit, deliberately stated here rather than left implicit: an Authority is a reusable
+    bearer capability with no expiry, revocation, or consumption semantics of its own.** This is
+    easy to get wrong given how much "one-shot"/"replay-prevention" vocabulary appears elsewhere in
+    this system for adjacent mechanisms -- those are different properties, on different objects:
+    - A `Decision` authorizes one specific `Intent`, once (`Gate._mint`/`verify`) -- but nothing
+      stops the SAME `Authority` from being exercised again via `Gate.submit()` to mint an
+      unlimited number of further `Decision`s, for different `Intent`s, indefinitely.
+    - `siphonophore-spawn`'s `SH-23` enforces at most one real OS spawn per `execution_id` -- a
+      property of the spawn-helper's own cgroup-leaf bookkeeping, unrelated to whether the
+      `Authority` that produced the `Decision` behind that spawn can be reused for something else.
+    - `Gate` is deliberately stateless (no ledger anywhere -- see the module docstring), so there
+      is no mechanism that *could* track single-use for `Authority` even if it were intended to.
+    Concretely: once minted, an `Authority` remains valid for as long as its `Scope` remains
+    meaningful, with no built-in way to revoke or expire it. A leaked delegated `Authority`
+    (captured from logs, a compromised sub-agent process, or anywhere else) remains fully
+    exploitable, within its scope, indefinitely -- this is a real property to design around at the
+    orchestration layer (e.g. narrow scopes, short-lived processes holding them), not something
+    this object or `Gate` currently mitigates on its own."""
 
     authority_id: str
     principal_id: str

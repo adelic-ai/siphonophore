@@ -44,7 +44,12 @@ Today, Siphonophore demonstrates:
   enforces scope attenuation and delegation depth, and preserves the originating `order_id`.
   Exercise of delegated authority is independently re-verified before a `Decision` is minted, and
   reachable through the ordinary public `Broker.dispatch(intent, authority=...)` interface — a
-  caller demonstrating delegation no longer has to know `Gate`/`Executor` exist.
+  caller demonstrating delegation no longer has to know `Gate`/`Executor` exist. **An `Authority`
+  itself has no expiry, revocation, or consumption semantics** — it's a reusable bearer capability
+  for as long as its scope stays meaningful, distinct from the replay protections `Decision` and
+  `siphonophore-spawn`'s `SH-23` provide for other objects. A leaked delegated `Authority` remains
+  exploitable indefinitely within its scope; narrowing this is orchestration-layer design work, not
+  yet built. See `DESIGN.md` §9 for the full explanation.
 
 - **Real OS-level execution identity** — the `uid_cgroup` / `uid_cgroup_checkin` backends provision
   a genuine ephemeral system user and real cgroup v2 leaf per execution. Check-in independently

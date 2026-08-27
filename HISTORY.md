@@ -769,3 +769,55 @@ required touching `siphonophore_core`'s actual security kernel once the delegati
 orchestration component (something that decides when to delegate, in a live deployment, not test
 code standing in for one) does not exist; the NeMo/Fabric reconciliation remains a separate,
 still-deferred thread.
+
+## Two robustness/disclosure fixes from an adversarial post-vertical-slice review, before freezing
+
+With all four sequenced pieces landed, ran a deliberately adversarial architecture review of the
+finished system -- not "does it work" but "what assumptions, residual trust gaps, or accidental
+couplings remain that could invalidate or materially weaken the demonstrated claim." Classified
+every finding into three buckets: actual claim-breaking gaps, disclosed limitations acceptable for
+the current guarantee, and ordinary missing product features. Also cross-checked every
+demonstrated-guarantee claim in README/DESIGN.md against a specific named test, and scanned all
+three docs plus the pinned contract for overclaiming language ("compromise-resistant,"
+"tamper-proof," "complete," "guaranteed," and similar). Result: every demonstrated guarantee has a
+real, passing test behind it; no overclaiming language found (the one "tamper-proof" occurrence is
+an explicit negation, correctly hedged); the already-disclosed limitations (cgroup-leaf
+non-cleanup, SH-23's replay-vs-authorization scoping, caller-declared consequence/issuer) held up
+on independent re-derivation, not just re-assertion. Two real findings did surface, both fixed
+before freezing rather than left as follow-ups.
+
+**Disclosure gap, not a broken guarantee: `Authority` has no expiry, revocation, or consumption
+semantics, and nothing said so explicitly.** `Gate` mints Decisions and Authorities with the
+identical mint-then-independently-reverify discipline, but only `Decision` (one Intent, once) and
+`siphonophore-spawn`'s `SH-23` (one real spawn per `execution_id`) actually enforce anything
+resembling one-shot use. `Gate` is deliberately stateless -- no ledger anywhere -- so there is no
+mechanism that could track single-use for `Authority` even if intended. This was never claimed
+false by any doc, but the density of "one-shot"/"replay-prevention" vocabulary used for those
+*other* two objects made the omission an easy, wrong assumption to carry over. A leaked delegated
+Authority (captured from logs, a compromised sub-agent, or elsewhere) remains fully exploitable,
+within its scope, indefinitely -- a real property, not mitigated by anything built so far, worth
+naming rather than leaving to be discovered the hard way. Documented explicitly in three places
+that need to agree: `authority.py`'s own `Authority` docstring (the most detailed explanation,
+distinguishing all three "replay" claims and which object each actually belongs to),
+`mediation.py`'s `Gate.submit()` docstring (a pointer at the point a caller would naturally wonder
+about it), and DESIGN.md §9 plus its own "Explicitly open" bullet (the canonical disclosed-
+limitations list). README's "Delegated authority" bullet gained the same disclosure, condensed.
+
+**A narrow, real race in `CheckedInSpawnHelperBackend`'s stdin-writer thread, found and fixed.** The
+earlier fix for the `communicate()`-flush-on-closed-stdin deadlock (see the check-in composition
+entry above) called `writer.join(timeout=5)` then unconditionally set `proc.stdin = None` --
+without checking whether the writer thread had actually finished. For content near `SH-14`'s own
+size caps, or a pathologically slow pipe, the main thread's `proc.stdin = None` could race the
+writer thread's own `finally: proc.stdin.close()`, an unguarded `AttributeError` in a daemon
+thread. Low probability given realistic payload sizes in every test that exercises this path, but
+real and previously unguarded. Fixed by checking `writer.is_alive()` after the join: if the writer
+genuinely hasn't finished, the fix does not proceed past the race -- it kills the subprocess and
+raises `ExecutionError` instead, fail-closed rather than racing. Chosen specifically because it
+preserves the exact current behavior for the realistic case (writer always finishes well within
+the join timeout) while replacing the one race with a safe, explicit failure for the case that
+would have triggered it.
+
+Both fixes validated with the same discipline as the fixed-`intent_id` bug earlier in this thread:
+the full colima suite run twice, back to back, no cleanup between runs, all green both times, host
+confirmed clean. Portable suite unaffected (both changes are Linux-specific code paths; the
+portable suite's 127 passed / 39 skipped count is unchanged by either fix).

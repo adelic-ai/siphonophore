@@ -119,11 +119,26 @@ class CheckedInSpawnHelperBackend(ExecutionBackend):
             checkin_result = self._registry.wait_for_result(nonce, timeout=self._checkin_timeout)
             observations["checkin"] = checkin_result
             writer.join(timeout=5)
-            # The writer thread already closed the real stdin fd -- communicate() below still
-            # tries to flush/close `self.stdin` itself unless told not to, and flushing an
-            # already-closed file raises ValueError *inside* communicate(), before it finishes
-            # waiting for/reaping the child. Clearing the attribute (not the fd, already closed)
-            # tells communicate() to skip stdin handling entirely.
+            if writer.is_alive():
+                # The writer thread hasn't actually finished (and so still owns proc.stdin) --
+                # touching proc.stdin from this thread now would race its own `finally:
+                # proc.stdin.close()`, which is exactly the bug this guard exists to prevent.
+                # SH-14's own size caps mean this should never happen for realistic content; if it
+                # does, something is genuinely stuck (a pathologically slow pipe, or a bug), so
+                # fail closed here rather than proceed past an unfinished write.
+                if proc.poll() is None:
+                    proc.kill()
+                observations["returncode"] = proc.poll()
+                raise ExecutionError(
+                    f"execution {execution_id!r}: stdin writer thread did not finish within the "
+                    f"join timeout -- refusing to proceed rather than race proc.stdin's ownership"
+                )
+            # The writer thread already closed the real stdin fd (confirmed above -- it's no
+            # longer alive) -- communicate() below still tries to flush/close `self.stdin` itself
+            # unless told not to, and flushing an already-closed file raises ValueError *inside*
+            # communicate(), before it finishes waiting for/reaping the child. Clearing the
+            # attribute (not the fd, already closed) tells communicate() to skip stdin handling
+            # entirely.
             proc.stdin = None
 
             if not checkin_result.get("verified"):

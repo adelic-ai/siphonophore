@@ -78,7 +78,11 @@ class Gate:
            trusts that Executor, or anything else, already confirmed it.
         2. `intent.principal_id == authority.principal_id` -- a real, Gate-verified Authority
            object is a bearer capability; without this check, one principal's leaked/observed
-           Authority could be used to submit on a different principal's behalf.
+           Authority could be used to submit on a different principal's behalf. This check does
+           not expire or consume the Authority, though -- see `Authority`'s own docstring
+           (authority.py) for why it remains reusable indefinitely within its scope, a property
+           worth being explicit about rather than assuming from how carefully replay is prevented
+           elsewhere in this system (Decision, SH-23).
         3. `intent.kind in authority.scope.allowed_kinds` -- the exercised authority must actually
            cover what's being attempted (property: "the effect requested is within the delegated
            authority").

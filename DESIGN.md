@@ -301,6 +301,20 @@ minting operations independently re-verify their input before proceeding — Gat
 some caller already checked a parent Authority or Order, the same discipline `Executor.execute()`
 already applies to every Decision it's handed.
 
+**Stated explicitly, not left implicit: an Authority is a reusable bearer capability with no
+expiry, revocation, or consumption semantics.** This is a distinct property from the replay
+protections that exist elsewhere in this system, on different objects, and the two are easy to
+conflate given how much "one-shot" vocabulary appears nearby: a `Decision` authorizes one specific
+Intent, once; `siphonophore-spawn`'s `SH-23` permits at most one real OS spawn per `execution_id`.
+Neither says anything about the `Authority` behind them — `Gate.submit()` can mint an unbounded
+number of further Decisions from the same Authority, for different Intents, indefinitely, and
+`Gate` is deliberately stateless (no ledger — see §9's own framing above), so no mechanism here
+could track single-use even if it were intended to. A leaked delegated Authority (captured from
+logs, a compromised sub-agent process, or anywhere else) remains fully exploitable within its
+Scope indefinitely. This is not mitigated by anything `Gate`/`Authority` currently do — narrowing
+this is an orchestration-layer design concern (short-lived processes holding narrow scopes), named
+here rather than assumed solved.
+
 **The precise guarantee a delegated Authority's `order_id`/`parent_authority_id` fields carry, stated
 narrowly rather than oversold:** they attest that *Gate*, at the moment it minted this Authority,
 independently verified the parent and confirmed the derivation rules (subset scope, remaining
@@ -358,6 +372,11 @@ signed, auditable "no," the same shape any other policy denial already takes.
 - §9's Scope is deliberately minimal (kind-membership and delegation-depth only) — per-payload or
   per-resource delegation constraints (e.g. "may write_file only under a specific path") are real,
   plausible future need, not yet justified by anything actually built that needs them.
+- An `Authority` has no expiry, revocation, or consumption semantics — it's a reusable bearer
+  capability for as long as its `Scope` remains meaningful, distinct from the replay protections
+  `Decision`/`SH-23` provide for other objects. See §9's own fuller explanation above. Narrowing
+  this (short-lived Authorities, explicit revocation) is real future work, not yet built or
+  justified by anything this project has needed so far.
 - §9's Authority/Order mechanism is exposed through `Broker.dispatch(intent,
   authority=...)` — omitted, unchanged from before; given, threaded straight to
   `Gate.submit(intent, authority=authority)`. **Now also exposed at the `CognitiveLoop` level**:
