@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import uuid
 from pathlib import Path
 
 import pytest
@@ -113,7 +114,11 @@ print("RESULT_JSON:" + json.dumps(result))
 
 @requires_root_linux
 def test_unprivileged_broker_executes_via_spawn_helper(broker_user: str):
-    intent_id = "spawnbackend-inttest-001"
+    # Unique per invocation, not a fixed literal -- SH-23's replay-prevention means a leftover
+    # cgroup leaf from a PRIOR run of this test (this backend doesn't auto-clean leaves, a
+    # disclosed limitation -- see DESIGN.md/execution_spawn_helper.py) would otherwise cause a
+    # real, reproducible failure on the second run, not a flaky one.
+    intent_id = f"spawnbackend-inttest-{uuid.uuid4().hex[:8]}"
     driver = _DRIVER_TEMPLATE.format(repo_root=str(REPO_ROOT), uid_min=UID_MIN, uid_max=UID_MAX, intent_id=intent_id)
 
     proc = subprocess.run(

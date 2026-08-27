@@ -13,9 +13,7 @@ principal's effect in a genuine uid+cgroup boundary.
 
 B's delegated effect now goes through the real public `Broker.dispatch(intent, authority=...)`
 interface, not `Gate.submit()`/`Executor.execute()` stitched together by hand -- a caller
-demonstrating delegation no longer needs to know `Gate`/`Executor` exist at all. Real multi-loop
-orchestration of a second, independently running agent is still separate, later integration work;
-this closes the narrower gap where `Broker` itself couldn't express an authority-aware dispatch.
+demonstrating delegation no longer needs to know `Gate`/`Executor` exist at all.
 
 Also composes the real check-in protocol (identity.py) and Belnap reconciliation (audit.py) into
 this same delegated path via `CheckedInSpawnHelperBackend` -- delegated Authority -> public
@@ -23,24 +21,36 @@ this same delegated path via `CheckedInSpawnHelperBackend` -- delegated Authorit
 `siphonophore-spawn` -> independently, kernel-verified check-in (SO_PEERCRED) -> a reconciliation
 result tied to that specific execution. Nothing about `siphonophore-spawn.c`,
 `contracts/spawn_helper.md`, or `CheckedInUidCgroupBackend` was touched to make this possible --
-see `execution_spawn_helper_checkin.py`'s own docstring for exactly what was reused unchanged."""
+see `execution_spawn_helper_checkin.py`'s own docstring for exactly what was reused unchanged.
+
+Finally, real multi-loop orchestration: two independently running `CognitiveLoop` instances, each
+with its own `Model`/history/principal_id, sharing one `Gate`/`Executor`/`Broker`. Loop A holds its
+own root `Authority`; loop B holds an `Authority` delegated from A, constructed by test code
+standing in for whatever orchestrates a real deployment's agents (`CognitiveLoop` itself never
+grants or derives authority -- see `loop.py`'s own docstring for why holding one doesn't add a
+second path to an effect). Loop B's own model-produced completion, not directly-constructed test
+`Intent` objects, is what reaches `broker.dispatch(authority=...)` here -- this is what makes
+delegation visibly agent-to-agent rather than a test actor exercising delegated authority by hand."""
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
 
-from siphonophore_core.execution import Executor
+from siphonophore_core.execution import Executor, SameProcessBackend
 from siphonophore_core.execution_spawn_helper_checkin import CheckedInSpawnHelperBackend
 from siphonophore_core.execution_uid_cgroup import ProvisioningError, UidCgroupBackend, require_real_root_linux
 from siphonophore_core.intent import Intent
 from siphonophore_core.mediation import Gate, GateViolation
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.broker import Broker
+from siphonophore_harness.loop import CognitiveLoop
+from siphonophore_harness.model import ScriptedModel
 
 pytestmark = pytest.mark.linux_root_only
 
@@ -188,7 +198,11 @@ def test_delegated_effect_produces_independently_verified_and_reconciled_evidenc
     broker, backend, authority_b = _delegated_checkin_setup()
     try:
         sub_intent = Intent(
-            kind="run_artifact", principal_id="agent-a.sub-agent-b", intent_id="honest-checkin-001",
+            # Unique per invocation -- CheckedInSpawnHelperBackend doesn't auto-clean cgroup
+            # leaves (disclosed limitation), so a fixed id would fail on a second run that
+            # reuses a leftover leaf from the first, not flakily but every time.
+            kind="run_artifact", principal_id="agent-a.sub-agent-b",
+            intent_id=f"honest-checkin-{uuid.uuid4().hex[:8]}",
             consequence="privileged", payload={"outdir": str(world_writable_outdir)},
             artifact_code=_HONEST_DELEGATE_CODE,
         )
@@ -220,7 +234,8 @@ def test_fabricated_self_report_is_not_reconciled_as_confirmation(world_writable
     broker, backend, authority_b = _delegated_checkin_setup()
     try:
         sub_intent = Intent(
-            kind="run_artifact", principal_id="agent-a.sub-agent-b", intent_id="lying-checkin-001",
+            kind="run_artifact", principal_id="agent-a.sub-agent-b",
+            intent_id=f"lying-checkin-{uuid.uuid4().hex[:8]}",
             consequence="privileged", payload={"outdir": str(world_writable_outdir)},
             artifact_code=_LYING_DELEGATE_CODE,
         )
@@ -238,3 +253,92 @@ def test_fabricated_self_report_is_not_reconciled_as_confirmation(world_writable
         assert reconciliation["unreported.txt"]["value"] != "corroborated"
     finally:
         backend.shutdown()
+
+
+# ---- real multi-loop orchestration: two independently running CognitiveLoop instances --------
+
+TWO_LOOP_UID_MIN = 64600
+TWO_LOOP_UID_MAX = 64699
+
+_AGENT_B_CODE = """
+import json, os
+
+with open(os.path.join(payload["outdir"], "b_did_this.txt"), "w") as f:
+    f.write("agent B's own real effect")
+
+self_report = {
+    "principal_id": "agent-a.sub-agent-b",
+    "claims": [{"path": "b_did_this.txt", "content": "agent B's own real effect"}],
+}
+print(json.dumps(self_report))
+"""
+
+
+@requires_root_linux
+def test_two_real_cognitive_loops_agent_a_delegates_to_agent_b(world_writable_outdir: Path):
+    """Two independently running CognitiveLoop instances, each its own Model/history/principal_id,
+    sharing one Gate/Executor/Broker. Loop A dispatches with its own root Authority; loop B
+    dispatches with an Authority delegated from A -- constructed by this test, standing in for
+    whatever orchestrates a real deployment's agents (CognitiveLoop itself never grants or derives
+    authority, only exercises what it was constructed with). Loop B's own model-produced completion
+    is what reaches broker.dispatch(authority=...) here, not a directly-constructed Intent -- this
+    is what makes delegation visibly agent-to-agent, landing in the full real chain: siphonophore-
+    spawn, kernel-verified check-in, and Belnap reconciliation."""
+    gate = Gate(ConsequencePolicy(mapping={"privileged": "uid_cgroup_checkin"}))
+    checkin_backend = CheckedInSpawnHelperBackend(uid_min=TWO_LOOP_UID_MIN, uid_max=TWO_LOOP_UID_MAX, checkin_timeout=10.0)
+    executor = Executor(gate, backends={
+        "same_process": SameProcessBackend(allow_root=True),
+        "uid_cgroup_checkin": checkin_backend,
+    })
+    broker = Broker(gate=gate, executor=executor)
+
+    order = gate.issue_order("order-multiagent-001", "operator:ops-alice", frozenset({"run_artifact"}), max_delegation_depth=2)
+    authority_a = gate.grant_root_authority(order, principal_id="agent-a")
+
+    loop_a_completion = json.dumps({
+        "kind": "run_artifact", "consequence": "low", "artifact_code": "print('agent A did its own part')",
+    })
+    loop_a = CognitiveLoop(model=ScriptedModel([loop_a_completion]), broker=broker, principal_id="agent-a", authority=authority_a)
+    effect_a = loop_a.step("do your own part of the task")
+    assert effect_a.execution_class == "same_process"
+
+    authority_b = gate.delegate(authority_a, to_principal_id="agent-a.sub-agent-b")
+    loop_b_completion = json.dumps({
+        "kind": "run_artifact", "consequence": "privileged",
+        "payload": {"outdir": str(world_writable_outdir)}, "artifact_code": _AGENT_B_CODE,
+    })
+    loop_b = CognitiveLoop(model=ScriptedModel([loop_b_completion]), broker=broker, principal_id="agent-a.sub-agent-b", authority=authority_b)
+
+    try:
+        effect_b = loop_b.step("do the delegated subtask")
+        assert effect_b.execution_class == "uid_cgroup_checkin"
+        obs = effect_b.detail["observations"]
+        assert obs["checkin"]["verified"] is True
+        assert obs["reconciliation"]["b_did_this.txt"]["value"] == "corroborated"
+    finally:
+        checkin_backend.shutdown()
+
+
+@requires_root_linux
+def test_second_loop_cannot_exercise_outside_its_delegated_scope_via_a_real_completion():
+    """The same scope-violation refusal already proven at the Broker level directly
+    (test_harness_loop.py, portable) holds identically when B's out-of-scope request is produced
+    by a real CognitiveLoop's own model completion, sharing a Gate with a second, independent loop
+    (agent A), rather than constructed directly by test code."""
+    gate = Gate(ConsequencePolicy(allowed_kinds=("run_artifact", "write_file")))
+    executor = Executor(gate, backends={"same_process": SameProcessBackend(allow_root=True)})
+    broker = Broker(gate=gate, executor=executor)
+
+    order = gate.issue_order("order-multiagent-002", "operator:ops-alice", frozenset({"run_artifact"}), max_delegation_depth=1)
+    authority_a = gate.grant_root_authority(order, principal_id="agent-a")
+    loop_a = CognitiveLoop(model=ScriptedModel([json.dumps({"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})]),
+                            broker=broker, principal_id="agent-a", authority=authority_a)
+    loop_a.step("agent A's own ordinary turn")
+
+    authority_b = gate.delegate(authority_a, to_principal_id="agent-a.sub-agent-b")
+    out_of_scope_completion = json.dumps({"kind": "write_file", "consequence": "low", "artifact_code": "pass"})
+    loop_b = CognitiveLoop(model=ScriptedModel([out_of_scope_completion]), broker=broker,
+                            principal_id="agent-a.sub-agent-b", authority=authority_b)
+
+    with pytest.raises(GateViolation):
+        loop_b.step("try something agent B was never delegated")

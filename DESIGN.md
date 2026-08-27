@@ -218,10 +218,18 @@ uid+cgroup execution → kernel-verified check-in (`SO_PEERCRED`) → reconcilia
 untrusted self-report. The negative cases are part of the proof, not a separate concern: scope
 expansion is refused, artifact substitution is refused before the privileged boundary ever runs,
 and a genuinely authentic identity's false self-report still refuses to reconcile as confirmation.
-What this does *not* yet demonstrate: a second, independently running `CognitiveLoop` actually
-producing the delegated `Intent` — see §9's "Explicitly open" notes. That is harness/product
-capability, not a gap in what this section requires proven; the requirement above is stated in
-terms of authority and mediation, not in terms of how many live agent loops exist.
+**Now also demonstrated with two independently running `CognitiveLoop` instances**, not only a
+single test actor exercising delegated authority directly: `CognitiveLoop` gained an optional
+`authority` parameter, threaded straight to `Broker.dispatch(intent, authority=...)` — an inert
+value object, not a new capability (see `loop.py`'s own docstring for why this doesn't add a
+second path to an effect, and `test_harness_structural_proof.py`'s updated signature check). Loop
+B's own model-produced completion, not a directly-constructed `Intent`, is what reaches the Gate
+here — this is what makes delegation visibly agent-to-agent. Granting authority
+(`issue_order`/`grant_root_authority`/`delegate`) still requires a `Gate` reference `CognitiveLoop`
+never holds — the orchestrating code (a test, or eventually a real harness-level component)
+performs those calls and constructs each loop with the `Authority` it should hold, exactly as
+DESIGN.md's own delegation model already required. See §9's "Explicitly open" notes for what
+remains genuinely open in this area.
 
 ## §8 — Platform attestation is a separate, lower layer than execution identity
 
@@ -350,18 +358,22 @@ signed, auditable "no," the same shape any other policy denial already takes.
 - §9's Scope is deliberately minimal (kind-membership and delegation-depth only) — per-payload or
   per-resource delegation constraints (e.g. "may write_file only under a specific path") are real,
   plausible future need, not yet justified by anything actually built that needs them.
-- §9's Authority/Order mechanism is now exposed through `Broker.dispatch(intent,
+- §9's Authority/Order mechanism is exposed through `Broker.dispatch(intent,
   authority=...)` — omitted, unchanged from before; given, threaded straight to
-  `Gate.submit(intent, authority=authority)`. The real end-to-end delegation slice
-  (`tests/test_harness_loop_linux.py`) now exercises B's delegated effect through this public
-  interface, not `Gate`/`Executor` stitched together by hand. Still open: real multi-agent
-  orchestration — a second, independently running `CognitiveLoop` instance actually holding and
-  exercising a delegated Authority — doesn't exist at the harness level. §9 makes the authority
-  *mechanism* real and now reachable through the ordinary dispatch path; wiring a second live agent
-  through it is separate, later work. Also still open: `Gate.issue_order()`/`grant_root_authority()`/
-  `delegate()` (the grant side) stay outside `Broker` entirely, deliberately — they're not Intents,
-  so exposing them through `dispatch()` was never the right shape; whatever eventually orchestrates
-  a second agent will need its own, separate way to call them.
+  `Gate.submit(intent, authority=authority)`. **Now also exposed at the `CognitiveLoop` level**:
+  an optional `authority` constructor parameter, threaded to `broker.dispatch()` unchanged —
+  `tests/test_harness_loop_linux.py` runs two independently constructed `CognitiveLoop` instances
+  (separate `Model`, history, `principal_id`), sharing one `Gate`/`Executor`/`Broker`, with the
+  second loop's own model-produced completion (not a directly-constructed `Intent`) reaching the
+  Gate through its delegated `Authority`. `CognitiveLoop` itself still cannot grant or derive
+  authority — it has no `Gate` reference, only ever exercises an `Authority` handed to it at
+  construction — so `issue_order()`/`grant_root_authority()`/`delegate()` (the grant side) remain
+  outside both `Broker` and `CognitiveLoop`, performed by whatever orchestrates the agents (test
+  code today; a real harness-level orchestration component, not yet built, eventually). **What
+  remains genuinely open:** that orchestration component itself — something that decides *when* to
+  delegate, constructs the second loop, and supplies its own `Model` — doesn't exist; today's proof
+  is that the mechanism composes correctly once an orchestrator (of any shape) does those three
+  things, not that Siphonophore includes such an orchestrator.
 - Whether "same process" should ever be a default execution class, or whether §2's policy should
   require an explicit, justified exception to stay in-process rather than treating it as a default.
 - §8's platform attestation is undesigned below the level stated: no attestor implementation

@@ -694,3 +694,78 @@ dispatch path; the authorization is independently re-verified before execution; 
 under a real OS identity through a privilege boundary the broker itself does not possess; and that
 execution is independently, kernel-verified and reconciled against an untrusted self-report, with
 a false claim refused as confirmation even when the identity behind it is real.
+
+## Real multi-loop orchestration: two independently running CognitiveLoop instances
+
+The fourth item, following directly from the user's own reframing after item #3 landed: "Siphonophore
+now demonstrates its central architectural claim end to end... I would not immediately treat
+'second CognitiveLoop' as another missing security requirement... it's the next useful
+harness/product capability... `CognitiveLoop B` should merely become another producer of intents
+carrying an already-established delegated authority. It should not require a new delegation
+mechanism, execution path, identity scheme, or evidence model. If adding the second loop starts
+forcing changes into those layers, that is a warning that orchestration is bleeding downward into
+the security kernel."
+
+**The change stayed exactly that small.** `CognitiveLoop.__init__` gained one optional parameter,
+`authority: Authority | None = None`, stored and threaded straight into the existing
+`self._broker.dispatch(parsed.intent, authority=self._authority)` call -- nothing else in `loop.py`
+changed, and nothing in `siphonophore_core` (authority.py, mediation.py, execution.py, policy.py,
+identity.py, audit.py) was touched at all. `CognitiveLoop` still cannot grant or derive authority --
+it holds no `Gate` reference, only ever exercises an `Authority` handed to it at construction, and
+an `Authority` is an inert value object with no methods of its own that do anything. Granting
+(`issue_order`/`grant_root_authority`/`delegate`) stays entirely outside both `Broker` and
+`CognitiveLoop`, performed by whatever orchestrates the two loops -- test code here, standing in for
+a real harness-level orchestration component that doesn't exist yet and wasn't built.
+
+**This one change did force a test to change, and that was correctly anticipated, not a surprise.**
+`test_harness_structural_proof.py`'s own `test_cognitive_loop_only_holds_a_model_and_a_broker`
+asserts `CognitiveLoop.__init__`'s exact parameter set by static introspection -- by design, meant
+to catch exactly this kind of addition. The question worth asking precisely was not "does this test
+still pass unmodified" (it can't, by its own design) but "does the INVARIANT it exists to enforce
+still hold" -- and it does: holding an `Authority` doesn't give `CognitiveLoop` a second way to reach
+an effect, since the only thing it can ever do with one is hand it to `broker.dispatch()`, which
+already independently re-verifies it. Updated the test's assertion and renamed it
+(`test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority`), with its own docstring now
+explaining why this specific addition doesn't weaken what the test checks -- this is the harness
+layer growing a real capability, not orchestration policy bleeding into the security kernel, which
+would look like new Gate methods, new Decision fields, or a new execution backend instead.
+
+**New tests, portable and real:** `test_harness_loop.py` gained two portable tests (a delegated
+loop dispatching successfully; a delegated loop refused outside its scope) using `SameProcessBackend`
+-- no root needed, since the authority mechanism itself is pure Gate logic, matching the same
+portable/root-required pairing this project has used throughout. `test_harness_loop_linux.py`
+gained the real vertical slice: two independently constructed `CognitiveLoop` instances (separate
+`ScriptedModel`, separate history, separate `principal_id`) sharing one `Gate`/`Executor`/`Broker`
+-- agent A dispatches with its own root `Authority` via `same_process`; agent B dispatches with an
+`Authority` delegated from A, its own model-produced completion (not a directly-constructed
+`Intent`) landing in the full real chain: `siphonophore-spawn`, kernel-verified check-in, Belnap
+reconciliation. A second test proves the identical out-of-scope refusal holds when driven by a real
+completion rather than test code constructing the `Intent` by hand.
+
+**A real, reproducible bug was found and fixed while validating this, unrelated to the new work
+itself but exposed by running the full suite twice in a row rather than once:** three earlier tests
+(`test_execution_spawn_helper_linux.py`'s unprivileged-broker integration test, and two of the
+check-in composition tests added for item #3) used fixed, hardcoded `intent_id` literals. Since
+`SpawnHelperBackend`/`CheckedInSpawnHelperBackend` deliberately don't clean up cgroup leaves (a
+disclosed limitation from item #1, reasoned through and kept), a second run of the same test with
+the same fixed id collided with its own prior run's leftover leaf -- `SH-23`'s replay-prevention
+correctly refused it, surfacing as an `ExecutionError` in one backend's shape and a check-in
+*timeout* in the other's (since the artifact process never got far enough to perform check-in at
+all when the C helper refused before ever exec'ing it). Not a new bug in the security mechanism --
+a real, concrete demonstration that the disclosed cleanup limitation has an actual, reproducible
+cost for exactly this shape of test. Fixed by making all three ids unique per invocation
+(`uuid.uuid4().hex[:8]` suffix); confirmed by running the full suite three times back to back with
+no cleanup between runs, all green.
+
+165 passed on colima (was 161), 127 passed portable (was 125), zero regressions, host confirmed
+clean across three consecutive full-suite runs.
+
+This closes all four items from the sequence this thread has run since the maturity assessment:
+unprivileged-broker `uid_cgroup` execution, authority-aware `Broker.dispatch()`, check-in/Belnap
+composition, and now real two-loop orchestration -- each landed as the smallest change that reused,
+rather than duplicated or modified, what the previous step had already proven, and none of them
+required touching `siphonophore_core`'s actual security kernel once the delegation model itself
+(Order/Authority/Scope) was in place. What's left, named honestly rather than implied solved: a real
+orchestration component (something that decides when to delegate, in a live deployment, not test
+code standing in for one) does not exist; the NeMo/Fabric reconciliation remains a separate,
+still-deferred thread.

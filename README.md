@@ -22,9 +22,14 @@ artifact substitution is refused before the privileged execution boundary ever r
 genuinely authentic execution identity lying about what it did does not become corroborated merely
 because its identity is real.
 
-It is not yet a complete multi-agent, multi-model harness — no second, independently running agent
-loop exists yet. That's a harness/product capability, not a missing piece of the security
-architecture: the thesis above is demonstrated without it.
+It is not yet a complete multi-agent, multi-model harness. Two independently running
+`CognitiveLoop` instances, sharing one `Gate`/`Broker`, now compose correctly — one holding its own
+root `Authority`, the other holding an `Authority` delegated from the first, each producing its own
+model-generated intent — proving the mechanism holds for real agent-to-agent delegation, not only a
+single test actor exercising delegated authority by hand. What doesn't exist yet is an
+*orchestration* component: something that decides when to delegate, constructs the second loop, and
+supplies its own model, in a live deployment rather than a test. That's harness/product capability,
+not a missing piece of the security architecture — the thesis is demonstrated without it.
 
 Today, Siphonophore demonstrates:
 
@@ -82,7 +87,7 @@ The complete demonstrated authority path is:
       ▼
     Authority B
       │
-      │ exercised by B
+      │ exercised by B (a second, independently running CognitiveLoop)
       ▼
     Intent
       │
@@ -107,14 +112,19 @@ The complete demonstrated authority path is:
 One real test (`tests/test_harness_loop_linux.py`) demonstrates this entire chain in a single
 composed execution, including a negative case: a delegate whose real check-in verifies but whose
 self-report lies about what it did reconciles as `contradiction`/`unreported_activity`, never
-`corroborated` — a genuine identity plus a false claim is still refused as confirmation.
+`corroborated` — a genuine identity plus a false claim is still refused as confirmation. A separate
+test in the same file drives the identical chain with two real, independently running
+`CognitiveLoop` instances instead of a single test actor — agent A's own root `Authority`, agent
+B's `Authority` delegated from A, B's own model-produced completion reaching the Gate through it —
+plus the same out-of-scope refusal shown holding when the request comes from a real completion.
 
 ### Not yet implemented or integrated
 
-- There is not yet a second independently running, model-driven agent loop exercising delegated
-  authority. `Broker.dispatch(intent, authority=...)` makes delegation reachable through the
-  ordinary public dispatch path — a real principal can hold and exercise a delegated `Authority`
-  through it — but no second, live `CognitiveLoop` instance actually does so yet.
+- `CognitiveLoop` can hold and exercise a delegated `Authority` (an optional constructor
+  parameter, threaded to `Broker.dispatch()` unchanged), and two independently running instances
+  are proven to compose correctly. There is no *orchestration* layer yet — nothing in
+  `siphonophore_harness` decides when to delegate, spins up a second agent, or picks its model in a
+  live deployment; today that's done by hand (test code, or `examples/repl.py` if extended).
 - Container and VM execution substrates are not implemented.
 - Platform attestation and production credential delivery are not implemented — including any
   execution-specific identity mechanism (SPIFFE/SPIRE, JWT+Vault, or otherwise); see "Credential
@@ -514,9 +524,10 @@ identity verification, and the privileged C helper rather than mocked equivalent
 Each turn drives a real model call through intent parsing, `Gate`, and `Executor`.
 
 The current live harness uses the authority-less path — a single `CognitiveLoop`/`Broker` pair, one
-principal, no delegation. `Broker.dispatch()` itself is authority-aware now (see **Current state**
-above), but nothing here orchestrates a second, live agent that would actually hold and exercise a
-delegated `Authority`; that's still separate, later work.
+principal, no delegation. `CognitiveLoop` and `Broker.dispatch()` are both authority-aware now (see
+**Current state** above) and a second, real live agent could be constructed the same way
+`tests/test_harness_loop_linux.py` does — but `examples/repl.py` itself doesn't do that yet; nothing
+here decides when to spin one up or supplies its model. That's still separate, later work.
 
 ## Documentation
 

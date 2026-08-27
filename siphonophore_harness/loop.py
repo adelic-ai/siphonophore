@@ -1,21 +1,30 @@
 """CognitiveLoop -- the minimal native cognitive loop DESIGN.md section 6 requires
 siphonophore-harness to own: prompt -> completion -> parse intent -> feed result back.
 
-Holds a Model and a Broker, nothing else. Never imports os, subprocess, socket, or any other
-effect-producing stdlib module -- there is no capability in this file to touch the outside world
-except `broker.dispatch(intent)`, which always goes through Gate.submit() -> Executor.execute()
-(broker.py). test_harness_structural_proof.py enforces this by static analysis, not just
-convention: it asserts this module, intent_parsing.py, model.py, and broker.py import none of a
-blocklist of effect-producing stdlib modules.
+Holds a Model, a Broker, and optionally an Authority it was constructed with -- nothing else.
+Never imports os, subprocess, socket, or any other effect-producing stdlib module -- there is no
+capability in this file to touch the outside world except `broker.dispatch(intent, authority=...)`,
+which always goes through Gate.submit() -> Executor.execute() (broker.py). An `Authority` does not
+change this: it is an inert value object (authority.py) with no methods of its own that do
+anything -- the only thing this class can ever do with it is hand it to `broker.dispatch()`, which
+already independently re-verifies it (mediation.py's `Gate.submit()`) exactly as it would any other
+authority a caller supplied. Holding one does not add a second path to an effect; it lets this
+class exercise authority *given to it*, never authority it derives or grants itself -- granting
+(`Gate.issue_order()`/`grant_root_authority()`/`delegate()`) requires a `Gate` reference, which this
+class still never holds. test_harness_structural_proof.py enforces this by static analysis, not
+just convention: it asserts this module, intent_parsing.py, model.py, and broker.py import none of
+a blocklist of effect-producing stdlib modules, and that `CognitiveLoop.__init__` accepts nothing
+beyond `model`, `broker`, `principal_id`, `authority`.
 
 This is DESIGN.md section 7's proof, made structural rather than merely asserted in prose: the
 only object this class holds that can produce an Effect is a Broker, and a Broker's only public
-method takes an Intent and always mediates it through the Gate first. There is no field on Model,
-ScriptedModel, or the completion text itself through which a Decision, a Gate secret, or an
-Executor reference could ever reach this class.
+method takes an Intent (and, now, an optional Authority) and always mediates it through the Gate
+first. There is no field on Model, ScriptedModel, or the completion text itself through which a
+Decision, a Gate secret, or an Executor reference could ever reach this class.
 """
 from __future__ import annotations
 
+from siphonophore_core.authority import Authority
 from siphonophore_core.intent import Effect
 
 from .broker import Broker
@@ -24,10 +33,11 @@ from .model import Model
 
 
 class CognitiveLoop:
-    def __init__(self, model: Model, broker: Broker, principal_id: str) -> None:
+    def __init__(self, model: Model, broker: Broker, principal_id: str, authority: Authority | None = None) -> None:
         self._model = model
         self._broker = broker
         self._principal_id = principal_id
+        self._authority = authority
         self.history: list[dict] = []
         self.last_message: str | None = None
 
@@ -54,7 +64,7 @@ class CognitiveLoop:
         completion = self._model.complete(self.history)
         parsed = parse_intent(completion, self._principal_id)
         self.last_message = parsed.message
-        effect = self._broker.dispatch(parsed.intent)
+        effect = self._broker.dispatch(parsed.intent, authority=self._authority)
         self.history.append({"role": "assistant", "content": completion})
         self.history.append({"role": "effect", "content": _describe_effect(effect)})
         return effect

@@ -38,11 +38,19 @@ def test_module_has_no_effect_producing_imports(module):
     assert forbidden_found == set(), f"{module.__name__} imports effect-producing modules: {forbidden_found}"
 
 
-def test_cognitive_loop_only_holds_a_model_and_a_broker():
+def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     """The class's own __init__ signature is the other half of the structural proof: nothing it
-    accepts or stores gives it a second way to reach an effect besides broker.dispatch()."""
+    accepts or stores gives it a second way to reach an effect besides broker.dispatch().
+
+    `authority` (siphonophore_core.authority.Authority) is deliberately allowed here, unlike a
+    Gate reference or anything execution-related: it's an inert value object with no methods of
+    its own that do anything -- the only thing CognitiveLoop can do with it is hand it to
+    broker.dispatch(authority=...), which already independently re-verifies it. Holding one lets
+    a loop exercise authority given to it; it does not let the loop derive or grant authority
+    itself (that needs a Gate reference, which this signature still excludes), and it does not add
+    a second path to an effect."""
     import inspect
 
     sig = inspect.signature(loop.CognitiveLoop.__init__)
     param_names = set(sig.parameters) - {"self"}
-    assert param_names == {"model", "broker", "principal_id"}
+    assert param_names == {"model", "broker", "principal_id", "authority"}

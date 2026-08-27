@@ -118,3 +118,41 @@ def test_last_message_is_none_when_the_completion_fails_to_parse_at_all():
     with pytest.raises(IntentParseError):
         loop.step("do something")
     assert loop.last_message is None
+
+
+# ---- CognitiveLoop holding a delegated Authority --------------------------------------------
+# CognitiveLoop is a mere producer of intents carrying an already-established Authority here --
+# granting authority (Gate.issue_order()/grant_root_authority()/delegate()) stays outside it
+# entirely, done by test code standing in for whatever orchestrates a real second agent.
+
+def test_loop_holding_a_delegated_authority_dispatches_through_it():
+    gate = Gate(ConsequencePolicy(allowed_kinds=("run_artifact", "write_file")))
+    order = gate.issue_order("order-1", "operator:alice", frozenset({"run_artifact"}), max_delegation_depth=1)
+    authority_a = gate.grant_root_authority(order, "agent-a")
+    authority_b = gate.delegate(authority_a, "agent-a.sub-agent-b")
+
+    backends = {"same_process": SameProcessBackend(allow_root=True)}
+    broker = Broker(gate=gate, executor=Executor(gate, backends=backends))
+    completion = json.dumps({"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})
+    loop_b = CognitiveLoop(model=ScriptedModel([completion]), broker=broker, principal_id="agent-a.sub-agent-b", authority=authority_b)
+
+    effect = loop_b.step("do the delegated subtask")
+    assert effect.execution_class == "same_process"
+
+
+def test_loop_holding_a_delegated_authority_is_refused_outside_its_scope():
+    """The scope-violation refusal already proven at the Broker level (test_harness_broker.py)
+    holds identically when the intent is produced by a real CognitiveLoop's own completion, not
+    constructed directly by test code."""
+    gate = Gate(ConsequencePolicy(allowed_kinds=("run_artifact", "write_file")))
+    order = gate.issue_order("order-2", "operator:alice", frozenset({"run_artifact"}), max_delegation_depth=1)
+    authority_a = gate.grant_root_authority(order, "agent-a")
+    authority_b = gate.delegate(authority_a, "agent-a.sub-agent-b")
+
+    backends = {"same_process": SameProcessBackend(allow_root=True)}
+    broker = Broker(gate=gate, executor=Executor(gate, backends=backends))
+    out_of_scope_completion = json.dumps({"kind": "write_file", "consequence": "low", "artifact_code": "pass"})
+    loop_b = CognitiveLoop(model=ScriptedModel([out_of_scope_completion]), broker=broker, principal_id="agent-a.sub-agent-b", authority=authority_b)
+
+    with pytest.raises(GateViolation):
+        loop_b.step("try something outside what was delegated")
