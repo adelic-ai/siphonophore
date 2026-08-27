@@ -393,10 +393,22 @@ signed, auditable "no," the same shape any other policy denial already takes.
   genuinely separate fds past it. **Implemented and validated for real on colima**
   (`spawn_helper/siphonophore-spawn.c`, `tests/test_spawn_helper_linux.py`) — every `SH-NN`
   invariant has a passing test exercised against a genuinely unprivileged `sudo`-mediated
-  invocation, not just reasoned through. Still open: `siphonophore-spawn` is not yet wired into an
-  `ExecutionBackend` that `Executor` actually dispatches to — until that integration lands, no
-  broker can run the `uid_cgroup` tiers through it while staying unprivileged itself, regardless of
-  the mechanism itself being done. **What this helper explicitly does not, and structurally cannot,
+  invocation, not just reasoned through. **Now wired in and validated end-to-end**:
+  `SpawnHelperBackend` (`siphonophore_core/execution_spawn_helper.py`) is a real `ExecutionBackend`
+  for the `uid_cgroup` class, registered exactly like `UidCgroupBackend` — a deployment chooses
+  which one to register, `Gate`/`Executor`/`Decision` are unaware of the difference.
+  `tests/test_execution_spawn_helper_linux.py` runs the actual dispatch code inside a real,
+  unprivileged system user via `sudo -u`, not just as root — the broker's own Python process is
+  confirmed never holding euid 0, the artifact lands under a genuine, different ephemeral uid, and
+  Executor's existing Decision/artifact-digest verification is confirmed still running before the
+  helper is ever invoked. **A closed limitation, not solved here and not silently worked around:**
+  `SpawnHelperBackend` does not remove a finished execution's cgroup leaf — delegating `CGROUP_ROOT`
+  to the broker for cleanup, or adding a separate broker-triggerable removal path, would let a
+  broker delete a finished leaf and replay the same `execution_id` through the helper again,
+  defeating `SH-23`'s one-real-spawn-ever property rather than just its concurrent-reuse guarantee.
+  Left as a disclosed, low-cost limitation (an empty cgroup v2 leaf is a near-zero-weight kernfs
+  entry) rather than building the thing that would weaken it. **What this helper explicitly does
+  not, and structurally cannot,
   close: whether the broker's own request was ever authorized by `Gate.submit()` in the first
   place.** The helper's `SH-23` invariant provides execution-identity consistency and replay
   prevention (at most one spawn per `execution_id`), not an independent attestation of Gate

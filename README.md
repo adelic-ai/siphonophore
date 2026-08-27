@@ -43,7 +43,11 @@ Today, Siphonophore demonstrates:
 
 - **`siphonophore-spawn`** — a minimal, dependency-free C helper for crossing the narrow privileged
   boundary required by UID/cgroup execution without requiring the entire broker to run as root.
-  The helper is implemented and independently validated against a real Linux privilege boundary.
+  Implemented, independently validated against a real Linux privilege boundary, and wired into the
+  normal `Executor` dispatch path (`SpawnHelperBackend`) — a genuinely unprivileged broker process
+  can execute the `uid_cgroup` tier through it, confirmed by running the actual dispatch code under
+  a real unprivileged system user, not just as root. A finished execution's cgroup leaf is not
+  automatically removed — a disclosed, deliberate limitation (see `DESIGN.md`), not an oversight.
 
 - **Independent evidence and reconciliation** — execution check-in and OS observations provide a
   channel distinct from agent self-report. `audit.py` uses
@@ -92,8 +96,6 @@ above. See "Not yet implemented or integrated" below.)
 - There is not yet a second independently running, model-driven agent loop exercising delegated
   authority. Delegation is real at the authority/Gate/Executor layer but is not yet live
   multi-agent orchestration.
-- `siphonophore-spawn` is independently validated but is not yet connected to the normal
-  `Executor` dispatch path.
 - Container and VM execution substrates are not implemented.
 - Platform attestation and production credential delivery are not implemented — including any
   execution-specific identity mechanism (SPIFFE/SPIRE, JWT+Vault, or otherwise); see "Credential

@@ -539,3 +539,49 @@ don't expose authority-aware dispatch; no real second `CognitiveLoop`/multi-agen
 exists; Scope's per-payload/per-resource dimension remains deliberately unbuilt; `principal_id` is
 still a bare string with no org/firm layer above it, despite §6's module layout having anticipated a
 real `Principal` class since early in this project.
+
+## siphonophore-spawn wired into a real ExecutionBackend -- the broker-root-privilege gap fully closed
+
+The third piece was implemented and validated on its own (see the earlier entry), but stood
+outside the actual dispatch path -- `Executor` had no way to reach it. Closed by
+`siphonophore_core/execution_spawn_helper.py`'s `SpawnHelperBackend`, a real `ExecutionBackend` for
+the `uid_cgroup` class implemented entirely as a client of `siphonophore-spawn` rather than
+`preexec_fn`. Traced `UidCgroupBackend`, `Executor.execute()`, the spawn-helper contract, and every
+existing Linux test shape before writing anything: `provision_ephemeral_user()`/
+`release_ephemeral_user()` were already unprivileged-broker-compatible and reused unchanged;
+`provision_cgroup()`/`add_pid_to_cgroup()`/`release_cgroup()` were correctly identified as NOT
+reusable, since cgroup creation for this path has to stay entirely inside the helper (`SH-23`) --
+the broker independently creating leaves would reopen exactly the gap the helper's own trust-
+boundary section already names as a limit on what it can prove; `Executor.execute()` needed zero
+changes at all, since its existing Decision/artifact-digest verification already runs before any
+registered backend, regardless of which one.
+
+**A real design question was surfaced and resolved before writing code, not discovered afterward:**
+who removes a cgroup leaf once its execution finishes? Delegating `CGROUP_ROOT` to the broker for
+cleanup was considered and rejected -- it would let the broker independently create leaves too,
+reopening the gap `SH-23`'s own trust-boundary discussion already names. A narrower alternative (a
+separate, small privileged wrapper script that only removes a validated, empty leaf, never touching
+`siphonophore-spawn.c` itself) was also considered and rejected on closer inspection: even that
+would let a broker delete a finished execution's leaf and then replay the identical `execution_id`
+through the helper again, defeating `SH-23`'s stronger, previously-unstated property (one real
+spawn, ever, per `execution_id`) rather than just its concurrent-reuse guarantee. Resolved by
+choosing not to build either: `SpawnHelperBackend` leaves finished executions' cgroup leaves in
+place, documented explicitly in the backend's own module docstring, `DESIGN.md`, and here -- the
+real cost is low (an unremoved cgroup v2 leaf is a near-zero-weight kernfs entry, not a resource
+problem in practice), and choosing not to build a broker-triggerable removal path is not itself a
+weakening of anything, unlike either alternative would have been.
+
+Validated on colima with something stronger than every prior `linux_root_only` test: rather than
+running pytest itself as root and exercising root-requiring code directly, the new test
+(`tests/test_execution_spawn_helper_linux.py`) provisions a real, unprivileged system user and a
+real, narrow sudoers grant (covering exactly the `useradd`/`userdel` wrapper scripts and the
+argument-free `siphonophore-spawn` invocation, not `ALL`), then runs the actual `Gate`/`Executor`/
+`SpawnHelperBackend` dispatch code inside a genuinely separate subprocess running as that
+unprivileged user (`sudo -u`) -- confirming the broker's own Python process never held euid 0, not
+assuming it from the mechanism working when invoked from an already-root test process. The artifact
+landed under a real, different ephemeral uid inside a real, kernel-verified cgroup, and a second
+test confirmed artifact-substitution refusal still fires before `siphonophore-spawn` is ever
+invoked, exactly as it does for every other backend, by construction. Full suite: 157 passed on
+colima (was 155), 123 passed portable, zero regressions, host confirmed clean (modulo the disclosed
+cgroup-leaf limitation itself, which recurred exactly once per test run as expected and was cleaned
+up manually, consistent with it being a known, low-cost, undealt-with limitation rather than a bug).
