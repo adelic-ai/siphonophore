@@ -37,17 +37,18 @@ def test_dispatch_refuses_a_denied_intent():
         b.dispatch(intent)
 
 
-def test_delegate_kind_dispatches_through_the_identical_call_as_run_artifact():
-    """DESIGN.md section 7: delegation must reduce to the exact same primitive a tool call does,
-    not a separately-mediated mechanism. Same Broker instance, same dispatch() call, two different
-    intent kinds landing on the same execution class with zero special-casing for "delegate"."""
+def test_delegate_is_not_an_ordinary_kind_broker_will_dispatch():
+    """Historical note, not a regression: an earlier version of this test asserted that a
+    "delegate"-kind Intent dispatched through Broker identically to "run_artifact" -- offered as
+    DESIGN.md section 7's delegation-reduces-to-the-same-primitive proof. It wasn't: dispatching an
+    inert kind string through the same call proves repeated mediation, not delegated authority
+    provenance (see HISTORY.md). "delegate" is no longer an Intent kind at all -- real delegation is
+    now Gate.delegate()/authority.py's Order->Authority mechanism, a grant, not an attempted effect.
+    This test documents that "delegate" is correctly refused as an ordinary kind now, not silently
+    treated as one -- see test_authority.py and test_harness_loop_linux.py's
+    test_a_delegates_constrained_authority_to_b_who_executes_via_uid_cgroup for the real mechanism."""
     gate = Gate(ConsequencePolicy())
     b = Broker(gate=gate, executor=_executor(gate))
-
-    tool_call = Intent(kind="run_artifact", principal_id="alice", intent_id="i-tool", consequence="low", artifact_code="pass")
-    delegation = Intent(kind="delegate", principal_id="alice", intent_id="i-delegate", consequence="low", artifact_code="pass")
-
-    tool_effect = b.dispatch(tool_call)
-    delegate_effect = b.dispatch(delegation)
-
-    assert tool_effect.execution_class == delegate_effect.execution_class == "same_process"
+    intent = Intent(kind="delegate", principal_id="alice", intent_id="i-delegate", consequence="low", artifact_code="pass")
+    with pytest.raises(GateViolation):
+        b.dispatch(intent)

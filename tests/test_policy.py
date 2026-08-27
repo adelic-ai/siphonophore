@@ -28,9 +28,12 @@ def test_consequence_policy_unknown_consequence_defaults_to_same_process():
 
 
 def test_consequence_policy_accepts_custom_mapping_and_kinds():
-    policy = ConsequencePolicy(mapping={"low": "uid_cgroup"}, allowed_kinds=("delegate",))
+    # "custom_kind" is an arbitrary example string here, unrelated to real delegation semantics
+    # (Order/Authority/Gate.delegate(), authority.py) -- this test is only proving ConsequencePolicy
+    # itself is configurable with any kind vocabulary a caller supplies.
+    policy = ConsequencePolicy(mapping={"low": "uid_cgroup"}, allowed_kinds=("custom_kind",))
     permitted, execution_class = policy.evaluate(
-        Intent(kind="delegate", principal_id="p", intent_id="i", consequence="low")
+        Intent(kind="custom_kind", principal_id="p", intent_id="i", consequence="low")
     )
     assert permitted is True
     assert execution_class == "uid_cgroup"

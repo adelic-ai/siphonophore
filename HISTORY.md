@@ -453,3 +453,89 @@ integration (a new backend, or an unprivileged-mode branch of `UidCgroupBackend`
 later work. Also unchanged: what this helper does and does not prove about authorization — see
 `contracts/spawn_helper.md`'s `SH-23` section and DESIGN.md §8 for why that's a deliberate scope
 boundary, not an oversight.
+
+## A maturity assessment found the central claim unproven; Order/Authority/Scope fixed it for real
+
+A trace-the-actual-code assessment (not design docs, not comments) against DESIGN.md §7's own
+central claim -- "a second intent shape, delegation, must be demonstrated reducing to the exact same
+primitive a tool call does" -- found it had only ever been proven inside `lab/002`, a self-contained,
+deliberately isolated script (DESIGN.md §0), never carried into `siphonophore_core`. Every existing
+test using `kind="delegate"` (`test_harness_broker.py`, `test_harness_loop_linux.py`,
+`test_execution_uid_cgroup_checkin_linux.py`, `test_execution_uid_cgroup_env_linux.py`) proved only
+that the string dispatched identically to `"run_artifact"` -- repeated mediation, not delegated
+authority provenance. `Executor.execute()` had zero branches on `intent.kind`; `Decision`/`Intent`
+carried no lineage field at all.
+
+**The first fix attempted was itself a category error, caught before any code was written for it.**
+A draft plan bound `parent_intent_id`/`root_intent_id` directly onto `Decision`, and used
+`execution_class` as the ceiling a delegator could not let a delegate exceed. Both were wrong for
+the same underlying reason: an Intent is an attempted exercise of authority, not its source, so
+lineage doesn't belong on `Decision`/`Intent` at all; and isolation strength (execution_class) and
+delegated authority are different questions entirely -- a sub-agent legitimately needing *stronger*
+isolation than its delegator for one task is not a scope violation, and the ceiling-based design
+would have wrongly refused it.
+
+**The corrected model: `siphonophore_core/authority.py`** -- `Order` (the ungrounded root: an
+originating authorization and its issuer, not itself an Intent), `Authority` (a standing,
+principal-scoped capability, derived from an Order or from a verified parent Authority, never from
+an Intent), `Scope` (deliberately minimal: `allowed_kinds` + `remaining_delegation_depth`, no
+per-payload constraints, no execution-class dimension at all). `Gate` (`mediation.py`) gained
+`issue_order()`, `grant_root_authority()`, `delegate()` -- each independently re-verifying its own
+input before minting, the identical discipline `Executor.execute()` already applies to every
+Decision -- and `submit()` gained an optional `authority` parameter: omitted, byte-for-byte
+unchanged from before this existed; given, three checks run before policy (re-verify the Authority;
+`intent.principal_id == authority.principal_id`, closing a real authority-impersonation gap the
+category-error draft never had a mechanism for at all; `intent.kind` within the exercised scope).
+`Decision` gained two optional fields (`authority_id`, `order_id`), both HMAC-bound alongside the
+existing five -- a pointer to what grounded a Decision, not a delegation ceiling of its own.
+
+The precise guarantee this produces was worth stating carefully rather than overselling: a delegated
+Authority's lineage fields attest that Gate, at minting time, independently verified its parent and
+enforced the derivation rules -- not that the child object independently reconstructs the whole
+ancestry chain in isolation. That stronger property needs independent per-link signatures (a
+macaroon-style scheme); this system has one Gate mediating every hop with one secret, so by
+induction the chain is sound as long as Gate's own re-verify-before-mint discipline held at every
+step -- a real, meaningful, but different claim, documented as such in `Gate.delegate()`'s own
+docstring and DESIGN.md §9.
+
+**`"delegate"` removed from `ConsequencePolicy.DEFAULT_ALLOWED_KINDS` entirely** -- it was never
+Executor-handled, so there was no real behavior to preserve, and keeping it as an inert placeholder
+was itself the anti-pattern this fix exists to correct. Delegation is now `Gate.delegate()`, a grant
+operation, never an Intent kind. Every test that used `kind="delegate"` incidentally (check-in,
+env-leak-probe tests with no actual delegation content) was mechanically repointed to
+`kind="run_artifact"`; `test_harness_broker.py`'s now-invalid positive claim was replaced with a
+negative test confirming `"delegate"` is correctly refused as an ordinary kind, not silently
+accepted; `siphonophore_harness/prompts.py`'s model-facing vocabulary and `broker.py`'s docstring
+(which had claimed delegation "reduces to the same primitive... by construction, not a case Broker
+adds for it" -- no longer true, Broker doesn't support authority-aware dispatch) were both corrected
+rather than left stale.
+
+**The real vertical slice** (`tests/test_harness_loop_linux.py`,
+`test_a_delegates_constrained_authority_to_b_who_executes_via_uid_cgroup`) composes the whole
+corrected path for real on colima: a real `Order`, principal A's root `Authority` derived from it, a
+narrower `Authority` delegated to B, B's own `Intent` submitted against that Authority (checked
+against B's actual delegated scope, not just "some delegation exists"), landing in the real,
+`useradd`/cgroup-v2-backed `UidCgroupBackend` -- real uid drop, kernel-verified via
+`/proc/<pid>/status`, confirmed independent of and unrelated to the authority mechanism entirely.
+Deliberately bypasses `Broker`/`CognitiveLoop` for the authority-exercising step (`Broker.dispatch()`
+has no `authority` parameter) rather than papering over that gap -- named explicitly in DESIGN.md's
+"Explicitly open" section as real, deferred integration work, not solved silently.
+
+`tests/test_authority.py` (portable, 15 tests) covers the mechanism's own properties in isolation:
+fabricated/missing lineage, a real chain splicing attack (two independently-valid `Order`->`Authority`
+chains, one's lineage fields swapped to claim the other's, real tokens unchanged -- fails
+verification, same mechanism `lab/002`'s kind-relabel case proved for `kind`), scope expansion at
+both delegation-mint time and exercise time, authority impersonation via principal mismatch,
+delegation-depth exhaustion, and -- composed with the pre-existing, unrelated mechanisms rather than
+duplicating them -- artifact substitution and execution-class downgrade demonstrated holding on an
+authority-grounded Decision, proving those two guarantees are genuinely orthogonal to the new
+authority layer, not something it happens to also cover.
+
+Full suite: 123 passed portable (up from 105 before this pass), 155 passed on colima including every
+`linux_root_only` test, zero regressions. Host confirmed clean after the real-root run.
+
+**Still genuinely open, named in DESIGN.md rather than left implicit:** `Broker`/`CognitiveLoop`
+don't expose authority-aware dispatch; no real second `CognitiveLoop`/multi-agent orchestration
+exists; Scope's per-payload/per-resource dimension remains deliberately unbuilt; `principal_id` is
+still a bare string with no org/firm layer above it, despite §6's module layout having anticipated a
+real `Principal` class since early in this project.

@@ -69,6 +69,14 @@ into that Decision's authorization, with no exceptions. An execution-class label
 any other dispatch-relevant field that isn't bound is a field that can be forged, replayed, or
 silently reinterpreted to authorize something other than what was actually granted.
 
+**Execution class is never a proxy for how much authority a principal holds, and must not become
+one.** §9 names this precisely: isolation strength (what this section governs) and delegated
+authority (§9's Scope) are different questions, discovered to be different the hard way during this
+project's own design of delegation — an early draft used execution-class as a delegation ceiling and
+had to be corrected. A sub-agent needing *stronger* isolation than its delegator for one specific
+task is not a scope violation; conflating the two dimensions would make that legitimate case
+indistinguishable from a real authority overreach.
+
 ## §3 — Two channels, not one: self-report and ground truth are different claims
 
 - **Self-report** — the agent/runtime's own narrative of what happened. Useful for explainability,
@@ -144,7 +152,8 @@ exercised by running code.
 siphonophore-core/
     identity/      Principal, ExecutionIdentity
     intent/        Intent, Effect
-    policy/        Authority, Decision
+    policy/        Policy, Decision
+    authority/     Order, Authority, Scope   (§9)
     mediation/     Gate
     execution/     Executor, ExecutionClass   (§2)
     audit/         SelfReport, Observation, Reconciliation   (§3)
@@ -182,9 +191,24 @@ minimal cognitive loop → typed Intent → Gate
 ```
 
 The proof required: **the cognitive loop must be structurally unable to produce that effect except
-through the Gate.** A second intent shape — delegation — must then be demonstrated reducing to the
-exact same primitive a tool call does, not a separately-mediated mechanism. Only after both are
-demonstrated, not merely asserted, does any of this get formalized into a public SDK API.
+through the Gate.**
+
+An earlier version of this section additionally required that delegation be demonstrated "reducing
+to the exact same primitive a tool call does, not a separately-mediated mechanism." That framing was
+itself a category error, caught only after building toward it: it treated delegation as another
+*Intent* shape, when an Intent is an attempted exercise of authority and delegation is the *grant* of
+authority — a fundamentally different kind of operation, not a variant of the same one. Proving
+"delegation dispatches through the identical call as a tool call" (as an early version of this
+project's own test suite did) demonstrates repeated mediation, not delegated authority provenance —
+it says nothing about whether the delegate's authority actually derives from the delegator's, is
+bounded by what the delegator itself held, or traces to a real originating grant. §9 replaces this
+requirement with the corrected one: **a delegated principal's authority must be demonstrated deriving
+from a verified parent Authority, tracing to a real Order, never exceeding what the parent itself
+could grant, checked independently at the point it's exercised** — and the exercise of that authority
+still reduces to the ordinary `Gate.submit()` → `Executor.execute()` path once granted, which is the
+part of the original claim that was actually correct. Only after both this and the Gate-cannot-be-
+bypassed proof above are demonstrated, not merely asserted, does any of this get formalized into a
+public SDK API.
 
 ## §8 — Platform attestation is a separate, lower layer than execution identity
 
@@ -234,6 +258,62 @@ be a supply-chain/deployment-time concern (code signing, reproducible builds) ou
 attestation chain entirely, resolved before the broker ever starts rather than by anything it checks
 about itself at startup. Which of these it actually is has not been decided here.
 
+## §9 — Order, Authority, Scope: delegated authority is a distinct model from execution requirements
+
+An Intent is an attempted exercise of authority, never its source. Delegation — a principal
+deriving constrained authority for another principal — needed its own, first-class representation
+once it became clear that treating it as "another Intent kind, Executor-handled like any other" was
+where the category error in §7's original framing came from: an Intent/Decision's lifetime is one
+attempt, one `intent_id`; authority is a standing thing a principal holds, that can itself become the
+parent of a further, narrower grant. Conflating the two shapes onto `Decision`/`Intent` (an earlier
+draft of this design bound `parent_intent_id`/`root_intent_id` directly onto `Decision`) was tried
+and discarded for exactly this reason.
+
+**Order** — the ungrounded root of a chain: the originating authorization and its issuer. Not an
+Intent; it doesn't attempt an effect, it's what makes attempting effects possible at all. `issuer` is
+an asserted string (an operator identity, a ticket reference), with the same disclosed-limitation
+shape `Intent.consequence` already has — not independently authenticated by this model.
+
+**Authority** — a standing, principal-scoped capability, derived either directly from a verified
+Order (`Gate.grant_root_authority`) or from a verified parent Authority (`Gate.delegate`). Both
+minting operations independently re-verify their input before proceeding — Gate never trusts that
+some caller already checked a parent Authority or Order, the same discipline `Executor.execute()`
+already applies to every Decision it's handed.
+
+**The precise guarantee a delegated Authority's `order_id`/`parent_authority_id` fields carry, stated
+narrowly rather than oversold:** they attest that *Gate*, at the moment it minted this Authority,
+independently verified the parent and confirmed the derivation rules (subset scope, remaining
+delegation depth) held against it. This is not the child Authority independently reconstructing or
+re-proving the entire ancestry chain from its own fields in isolation — that stronger property would
+require each hop to be checkable without trusting Gate's own minting discipline (e.g. independent
+per-link signatures, as in a macaroon scheme). This system has exactly one Gate mediating every hop
+with one secret; by induction, the chain is sound as long as Gate's re-verify-before-mint discipline
+held at every step that produced it — a real, meaningful guarantee, just a different claim than
+self-proving-without-Gate, and one worth stating precisely rather than letting "cryptographically
+bound" imply more than it does.
+
+**Scope** — what an Authority actually permits and how much further it may be delegated. Deliberately
+minimal, its first representation on purpose rather than by oversight: `allowed_kinds` and a
+`remaining_delegation_depth` budget. No per-payload or per-resource constraints (e.g. "may
+`write_file` only under `/tmp`") — real, plausible future need, not built speculatively ahead of
+actual pressure to build it. No isolation/execution-strength dimension at all, ever — see §2's note
+above for why that's load-bearing, not incidental.
+
+**What this does not attempt to be:** a general IAM framework, a Zanzibar/Warrant-style relationship
+system, a policy language, or an organization hierarchy above individual principals. `principal_id`
+remains a bare string throughout, matching every other use of it in this design — Order/Authority
+narrow what a principal may do, they don't model who or what a principal *is*.
+
+`Gate.submit()` gained an optional `authority` parameter for this: omitted, behavior is unchanged
+from before this section existed (an authority-less submission, evaluated purely by `Policy`,
+`Decision.authority_id`/`order_id` both `None`). Given, three independent checks run before policy
+is consulted: the Authority itself re-verifies; `intent.principal_id` must match
+`authority.principal_id` (without this, a leaked/observed Authority object — a bearer capability —
+could be used to submit on a different principal's behalf); `intent.kind` must be in
+`authority.scope.allowed_kinds`. The first two are structural-mismatch failures (`GateViolation`,
+nothing minted); the third folds into `permitted` alongside the ordinary policy result — a real,
+signed, auditable "no," the same shape any other policy denial already takes.
+
 ## Explicitly open, not yet resolved
 
 - The gate↔cognitive-loop protocol (MCP-native vs. something narrower) — §1 names it as a
@@ -250,8 +330,19 @@ about itself at startup. Which of these it actually is has not been decided here
   (§2's `uid_cgroup_checkin` gates its own artifact code on check-in success, so an unattributed
   observed effect cannot currently occur through it — see the `uid_cgroup_checkin` bullet below for
   why that guarantee is specific to this one backend's wrapper, not architectural).
-- An org/firm layer above an individual human Principal — delegation chains today only reach a
-  single human principal, with no representation of an organization the principal belongs to.
+- An org/firm layer above an individual human Principal — §9's Order/Authority chains now represent
+  real, multi-hop delegation lineage (previously: none existed at all), but `principal_id` is still a
+  bare string throughout, with no representation of an organization a principal belongs to, and no
+  real `Principal` class exists despite §6's module layout having anticipated one from early on.
+- §9's Scope is deliberately minimal (kind-membership and delegation-depth only) — per-payload or
+  per-resource delegation constraints (e.g. "may write_file only under a specific path") are real,
+  plausible future need, not yet justified by anything actually built that needs them.
+- §9's Authority/Order mechanism is not yet exposed through `Broker`/`CognitiveLoop` — exercising a
+  delegated Authority today means calling `Gate.submit(intent, authority=...)` directly;
+  `Broker.dispatch()` still only supports the authority-less path. Real multi-agent orchestration (a
+  second `CognitiveLoop` instance for a delegated principal) doesn't exist at the harness level
+  either — §9 makes the authority *mechanism* real; wiring a second live agent through it is
+  separate, later work.
 - Whether "same process" should ever be a default execution class, or whether §2's policy should
   require an explicit, justified exception to stay in-process rather than treating it as a default.
 - §8's platform attestation is undesigned below the level stated: no attestor implementation

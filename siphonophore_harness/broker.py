@@ -9,10 +9,12 @@ HMAC token before running anything (mediation.py, execution.py) -- a caller cann
 holding its own Gate/Executor references, because Broker is the only object a CognitiveLoop is
 ever given (loop.py).
 
-Kind is never special-cased here: `dispatch()` treats a "delegate" Intent exactly like a
-"run_artifact" one -- the same Gate.submit() call, the same Executor.execute() call, the same
-execution-class-keyed backend dispatch. Delegation reduces to the same primitive a tool call does
-by construction, not by a case Broker adds for it (DESIGN.md section 7).
+`dispatch()` deliberately has no `authority` parameter -- it only ever calls `self._gate.submit(intent)`,
+the authority-less path. Real delegation (Order/Authority/Gate.delegate(), authority.py) is a
+distinct operation, not an Intent kind, and exercising a delegated Authority currently means calling
+`Gate.submit(intent, authority=...)` directly rather than through this method -- see
+test_harness_loop_linux.py for the real end-to-end shape. Extending Broker to expose an
+authority-aware dispatch is real, deliberately deferred integration work, not done here.
 """
 from __future__ import annotations
 

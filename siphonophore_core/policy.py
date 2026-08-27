@@ -21,7 +21,14 @@ class Decision:
     `token`. This is a standing rule discovered twice independently while building the lab
     experiments (lab/002 for `kind`, lab/003 for `execution_class`) and restated here as a hard
     requirement for any field added to this class in the future: bind it into the token at the
-    moment it's added, not after."""
+    moment it's added, not after.
+
+    `authority_id`/`order_id` are `None` for an authority-less submission (`Gate.submit(intent)`,
+    unchanged, today's only path) and set only when `Gate.submit(intent, authority=...)` was used
+    to exercise a real, Gate-verified Authority -- see `authority.py` and `Gate.submit()`'s
+    docstring. This is a pointer to what authority grounded this one Decision, not a delegation
+    ceiling of its own -- lineage (parent/root) lives on `Authority`, never on `Decision`, because
+    a Decision is an exercise of authority, not a source of it."""
 
     intent_id: str
     principal_id: str
@@ -30,6 +37,8 @@ class Decision:
     execution_class: str
     artifact_digest: str
     token: str
+    authority_id: str | None = None
+    order_id: str | None = None
 
 
 class Policy(ABC):
@@ -58,7 +67,11 @@ class ConsequencePolicy(Policy):
         "high": "separate_process",
         "privileged": "uid_cgroup",
     }
-    DEFAULT_ALLOWED_KINDS = ("write_file", "run_artifact", "delegate")
+    # "delegate" deliberately absent: delegation is no longer an Intent kind Executor dispatches
+    # (it was inert as one -- see HISTORY.md). It's now a distinct Gate operation on Authority
+    # objects (Gate.delegate(), authority.py) -- a grant, not an attempted effect, so it doesn't
+    # belong in a list of effect-producing kinds at all.
+    DEFAULT_ALLOWED_KINDS = ("write_file", "run_artifact")
 
     def __init__(
         self,

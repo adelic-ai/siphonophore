@@ -68,7 +68,7 @@ def test_checked_in_uid_cgroup_child_does_not_inherit_the_brokers_secret():
     backend = CheckedInUidCgroupBackend(uid_min=UID_MIN, uid_max=UID_MAX, checkin_timeout=5.0)
     try:
         executor = Executor(gate, backends={"uid_cgroup_checkin": backend})
-        intent = Intent(kind="delegate", principal_id="alice", intent_id="env-leak-checkin", consequence="privileged", artifact_code=_PROBE_CODE)
+        intent = Intent(kind="run_artifact", principal_id="alice", intent_id="env-leak-checkin", consequence="privileged", artifact_code=_PROBE_CODE)
         decision = gate.submit(intent)
         effect = executor.execute(decision, intent)
 

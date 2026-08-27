@@ -20,7 +20,7 @@ def test_default_system_prompt_names_exactly_the_fields_parse_intent_allows():
 def test_default_system_prompt_names_the_real_default_kinds_and_consequences():
     """Must match ConsequencePolicy's actual default vocabulary (policy.py) -- an invented
     vocabulary here would just teach a real model to describe intents the default policy denies."""
-    for kind in ("write_file", "run_artifact", "delegate"):
+    for kind in ("write_file", "run_artifact"):
         assert kind in DEFAULT_SYSTEM_PROMPT
     for consequence in ("low", "high", "privileged"):
         assert consequence in DEFAULT_SYSTEM_PROMPT

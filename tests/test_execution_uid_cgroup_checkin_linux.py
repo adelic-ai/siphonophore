@@ -93,7 +93,7 @@ def test_checked_in_delegation_with_automatic_reconciliation(backend: CheckedInU
     executor = Executor(gate, backends={"uid_cgroup_checkin": backend})
 
     intent = Intent(
-        kind="delegate", principal_id="alice", intent_id="checkin-happy-01", consequence="privileged",
+        kind="run_artifact", principal_id="alice", intent_id="checkin-happy-01", consequence="privileged",
         payload={"outdir": str(world_writable_outdir)}, artifact_code=_LYING_DELEGATE_CODE,
     )
     decision = gate.submit(intent)
@@ -129,7 +129,7 @@ with open(os.path.join(payload["outdir"], "silent.txt"), "w") as f:
     f.write("did something, said nothing")
 """
     intent = Intent(
-        kind="delegate", principal_id="alice", intent_id="checkin-silent-01", consequence="privileged",
+        kind="run_artifact", principal_id="alice", intent_id="checkin-silent-01", consequence="privileged",
         payload={"outdir": str(world_writable_outdir)}, artifact_code=code,
     )
     gate = Gate(ConsequencePolicy(mapping={"privileged": "uid_cgroup_checkin"}))
@@ -154,7 +154,7 @@ def test_checkin_timeout_is_an_identity_failure_and_still_releases_uid_and_cgrou
     result, cleanup outcome) rather than discarding it as a bare message -- a caller catching a
     check-in failure still needs to know what was collected before attribution failed."""
     intent = Intent(
-        kind="delegate", principal_id="alice", intent_id="checkin-timeout-01", consequence="privileged",
+        kind="run_artifact", principal_id="alice", intent_id="checkin-timeout-01", consequence="privileged",
         payload={}, artifact_code="pass",
     )
     gate = Gate(ConsequencePolicy(mapping={"privileged": "uid_cgroup_checkin"}))
