@@ -52,3 +52,33 @@ def test_delegate_is_not_an_ordinary_kind_broker_will_dispatch():
     intent = Intent(kind="delegate", principal_id="alice", intent_id="i-delegate", consequence="low", artifact_code="pass")
     with pytest.raises(GateViolation):
         b.dispatch(intent)
+
+
+def test_dispatch_with_authority_exercises_delegated_scope():
+    """Portable counterpart to test_harness_loop_linux.py's real end-to-end slice -- proves
+    Broker.dispatch(intent, authority=...) works with no root/Linux needed, since the authority
+    mechanism itself is pure Gate logic. B holds a real Authority delegated from A; B's own effect
+    goes through the public Broker interface only."""
+    gate = Gate(ConsequencePolicy())
+    b = Broker(gate=gate, executor=_executor(gate))
+    order = gate.issue_order("order-1", "operator:alice", frozenset({"run_artifact"}), max_delegation_depth=1)
+    authority_a = gate.grant_root_authority(order, "agent-a")
+    authority_b = gate.delegate(authority_a, "agent-a.sub-agent-b")
+
+    intent = Intent(kind="run_artifact", principal_id="agent-a.sub-agent-b", intent_id="i-deleg-1",
+                     consequence="low", artifact_code="pass")
+    effect = b.dispatch(intent, authority=authority_b)
+    assert effect.execution_class == "same_process"
+
+
+def test_dispatch_with_authority_refuses_scope_expansion():
+    """B attempts a kind outside what A delegated -- refused through the same public interface."""
+    gate = Gate(ConsequencePolicy(allowed_kinds=("run_artifact", "write_file")))
+    b = Broker(gate=gate, executor=_executor(gate))
+    order = gate.issue_order("order-2", "operator:alice", frozenset({"run_artifact"}), max_delegation_depth=1)
+    authority_a = gate.grant_root_authority(order, "agent-a")
+    authority_b = gate.delegate(authority_a, "agent-a.sub-agent-b")
+
+    out_of_scope = Intent(kind="write_file", principal_id="agent-a.sub-agent-b", intent_id="i-deleg-2", consequence="low")
+    with pytest.raises(GateViolation):
+        b.dispatch(out_of_scope, authority=authority_b)

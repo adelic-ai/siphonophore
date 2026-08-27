@@ -585,3 +585,44 @@ invoked, exactly as it does for every other backend, by construction. Full suite
 colima (was 155), 123 passed portable, zero regressions, host confirmed clean (modulo the disclosed
 cgroup-leaf limitation itself, which recurred exactly once per test run as expected and was cleaned
 up manually, consistent with it being a known, low-cost, undealt-with limitation rather than a bug).
+
+## Broker.dispatch() made authority-aware -- delegation reachable through the public interface
+
+The real delegation vertical slice (previous entry) worked, but had to bypass `Broker` entirely:
+`Gate.submit(intent, authority=...)` and `Executor.execute()` stitched together by hand, since
+`Broker.dispatch()` only ever called the authority-less `Gate.submit(intent)`. A caller
+demonstrating delegation had to know `Gate`/`Executor` existed at all -- exactly the kind of
+escape hatch `Broker`'s own docstring already argued against for every other case.
+
+Fixed with the smallest possible change: `dispatch(self, intent, authority=None)`. Omitted, behavior
+is byte-for-byte unchanged from before this parameter existed. Given, it's threaded straight to
+`Gate.submit(intent, authority=authority)`, which already does its own independent re-verification
+of that Authority -- `Broker` adds no logic of its own, it only removes the need to bypass it.
+Granting authority itself (`issue_order`/`grant_root_authority`/`delegate`) stays outside `Broker`
+deliberately -- those aren't Intents, so routing them through `dispatch()` would have been the same
+category error `"delegate"`-as-an-Intent-kind already was.
+
+Rewrote the real end-to-end slice (`tests/test_harness_loop_linux.py`) so B's delegated effect goes
+through `broker.dispatch(sub_intent, authority=authority_b)` only -- Order/Authority setup (the
+grant side, not an effect) stays as direct `Gate` calls, matching where the design actually puts
+that boundary. Added a negative case through the same interface: B attempting a kind outside its
+delegated scope is refused via `GateViolation` propagating out of `dispatch()` itself, not a
+separately-checked `Decision`. Added a portable counterpart (`test_harness_broker.py`, two new
+tests, `SameProcessBackend`, no root needed) proving the same positive/negative shape without
+needing colima, since the authority mechanism itself is pure Gate logic.
+
+125 passed portable (was 123), 159 passed on colima (was 157), zero regressions, host confirmed
+clean (the disclosed spawn-helper cgroup-leaf leftover recurred exactly once, as expected, and was
+cleaned up manually).
+
+This gives Siphonophore a claim worth stating precisely, since every piece of it now has a specific
+test backing it rather than being asserted: a principal can delegate bounded authority to another
+logical actor: `Authority` re-verified, scope attenuation enforced, root traced (`test_authority.py`,
+`Gate.delegate()`); that actor exercises it through the harness's ordinary public dispatch path:
+`broker.dispatch(intent, authority=...)`, no bypass needed (`test_harness_broker.py`,
+`test_harness_loop_linux.py`); the authorization is independently re-verified before execution:
+`Gate.submit()`'s three checks, `Executor.execute()`'s Decision/artifact re-verification, both
+unconditional; and the resulting effect executes under a real OS identity through a privilege
+boundary the broker itself does not possess: `SpawnHelperBackend`, confirmed via a genuinely
+unprivileged broker subprocess (`test_execution_spawn_helper_linux.py`). Each clause has its own
+named test, not just an architecture diagram implying the composition.

@@ -337,12 +337,18 @@ signed, auditable "no," the same shape any other policy denial already takes.
 - §9's Scope is deliberately minimal (kind-membership and delegation-depth only) — per-payload or
   per-resource delegation constraints (e.g. "may write_file only under a specific path") are real,
   plausible future need, not yet justified by anything actually built that needs them.
-- §9's Authority/Order mechanism is not yet exposed through `Broker`/`CognitiveLoop` — exercising a
-  delegated Authority today means calling `Gate.submit(intent, authority=...)` directly;
-  `Broker.dispatch()` still only supports the authority-less path. Real multi-agent orchestration (a
-  second `CognitiveLoop` instance for a delegated principal) doesn't exist at the harness level
-  either — §9 makes the authority *mechanism* real; wiring a second live agent through it is
-  separate, later work.
+- §9's Authority/Order mechanism is now exposed through `Broker.dispatch(intent,
+  authority=...)` — omitted, unchanged from before; given, threaded straight to
+  `Gate.submit(intent, authority=authority)`. The real end-to-end delegation slice
+  (`tests/test_harness_loop_linux.py`) now exercises B's delegated effect through this public
+  interface, not `Gate`/`Executor` stitched together by hand. Still open: real multi-agent
+  orchestration — a second, independently running `CognitiveLoop` instance actually holding and
+  exercising a delegated Authority — doesn't exist at the harness level. §9 makes the authority
+  *mechanism* real and now reachable through the ordinary dispatch path; wiring a second live agent
+  through it is separate, later work. Also still open: `Gate.issue_order()`/`grant_root_authority()`/
+  `delegate()` (the grant side) stay outside `Broker` entirely, deliberately — they're not Intents,
+  so exposing them through `dispatch()` was never the right shape; whatever eventually orchestrates
+  a second agent will need its own, separate way to call them.
 - Whether "same process" should ever be a default execution class, or whether §2's policy should
   require an explicit, justified exception to stay in-process rather than treating it as a default.
 - §8's platform attestation is undesigned below the level stated: no attestor implementation

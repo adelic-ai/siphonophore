@@ -25,7 +25,9 @@ Today, Siphonophore demonstrates:
 - **Delegated authority** — `Order → Authority → delegated Authority`. One principal can derive
   constrained authority for another. At each derivation, `Gate` independently verifies the parent,
   enforces scope attenuation and delegation depth, and preserves the originating `order_id`.
-  Exercise of delegated authority is independently re-verified before a `Decision` is minted.
+  Exercise of delegated authority is independently re-verified before a `Decision` is minted, and
+  reachable through the ordinary public `Broker.dispatch(intent, authority=...)` interface — a
+  caller demonstrating delegation no longer has to know `Gate`/`Executor` exist.
 
 - **Real OS-level execution identity** — the `uid_cgroup` / `uid_cgroup_checkin` backends provision
   a genuine ephemeral system user and real cgroup v2 leaf per execution. Check-in independently
@@ -91,11 +93,10 @@ above. See "Not yet implemented or integrated" below.)
 
 ### Not yet implemented or integrated
 
-- `Broker` / `CognitiveLoop` do not yet expose authority-aware dispatch. Exercising delegated
-  `Authority` currently means calling `Gate.submit(intent, authority=...)` directly.
 - There is not yet a second independently running, model-driven agent loop exercising delegated
-  authority. Delegation is real at the authority/Gate/Executor layer but is not yet live
-  multi-agent orchestration.
+  authority. `Broker.dispatch(intent, authority=...)` makes delegation reachable through the
+  ordinary public dispatch path — a real principal can hold and exercise a delegated `Authority`
+  through it — but no second, live `CognitiveLoop` instance actually does so yet.
 - Container and VM execution substrates are not implemented.
 - Platform attestation and production credential delivery are not implemented — including any
   execution-specific identity mechanism (SPIFFE/SPIRE, JWT+Vault, or otherwise); see "Credential
@@ -494,8 +495,10 @@ identity verification, and the privileged C helper rather than mocked equivalent
 
 Each turn drives a real model call through intent parsing, `Gate`, and `Executor`.
 
-The current live harness uses the authority-less path. Authority-aware multi-agent orchestration is
-not yet exposed through `Broker` / `CognitiveLoop`; see **Current state** above.
+The current live harness uses the authority-less path — a single `CognitiveLoop`/`Broker` pair, one
+principal, no delegation. `Broker.dispatch()` itself is authority-aware now (see **Current state**
+above), but nothing here orchestrates a second, live agent that would actually hold and exercise a
+delegated `Authority`; that's still separate, later work.
 
 ## Documentation
 

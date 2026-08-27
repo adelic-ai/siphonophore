@@ -9,15 +9,21 @@ HMAC token before running anything (mediation.py, execution.py) -- a caller cann
 holding its own Gate/Executor references, because Broker is the only object a CognitiveLoop is
 ever given (loop.py).
 
-`dispatch()` deliberately has no `authority` parameter -- it only ever calls `self._gate.submit(intent)`,
-the authority-less path. Real delegation (Order/Authority/Gate.delegate(), authority.py) is a
-distinct operation, not an Intent kind, and exercising a delegated Authority currently means calling
-`Gate.submit(intent, authority=...)` directly rather than through this method -- see
-test_harness_loop_linux.py for the real end-to-end shape. Extending Broker to expose an
-authority-aware dispatch is real, deliberately deferred integration work, not done here.
+`dispatch()` takes an optional `authority` -- omitted, behavior is unchanged from before this
+parameter existed (the authority-less path, `self._gate.submit(intent)`). Given a real, held
+`Authority` (authority.py), it's threaded straight through to `Gate.submit(intent,
+authority=authority)`, which performs its own independent re-verification of that Authority before
+minting anything -- Broker adds no logic of its own here, it only removes the need for a caller
+demonstrating delegation to know about `Gate`/`Executor` at all and stitch them together manually.
+Granting authority itself (`Gate.issue_order()`/`grant_root_authority()`/`delegate()`) stays outside
+Broker entirely -- it's not an Intent, so it was never `dispatch()`'s job. Real multi-agent
+orchestration (a second, independently running `CognitiveLoop` actually holding and exercising a
+delegated `Authority`) is separate, still-deferred integration work; this only closes the gap where
+a single caller demonstrating delegation had to bypass Broker to do it.
 """
 from __future__ import annotations
 
+from siphonophore_core.authority import Authority
 from siphonophore_core.execution import Executor
 from siphonophore_core.intent import Effect, Intent
 from siphonophore_core.mediation import Gate
@@ -28,6 +34,6 @@ class Broker:
         self._gate = gate
         self._executor = executor
 
-    def dispatch(self, intent: Intent) -> Effect:
-        decision = self._gate.submit(intent)
+    def dispatch(self, intent: Intent, authority: Authority | None = None) -> Effect:
+        decision = self._gate.submit(intent, authority=authority)
         return self._executor.execute(decision, intent)
