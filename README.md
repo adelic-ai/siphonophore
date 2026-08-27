@@ -508,3 +508,6 @@ Apache 2.0 — see `LICENSE`.
 
 [^trusted-enough]: Adapted from Elad Meged, *Trusted Enough to Run*, Black Hat USA 2026:
     <https://blackhat.com/us-26/briefings/schedule/?#trusted-enough-to-run-breaking-ai-agents-in-official-workflows-53406>.
+    Also published by Meged (founding engineer, Novee) as "Critical Flaws in Anthropic, Google,
+    and OpenAI's Coding Agents":
+    <https://novee.security/blog/critical-flaws-in-anthropic-google-and-openais-coding-agents/>.
