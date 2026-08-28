@@ -303,7 +303,7 @@ here decides when to spin one up or supplies its model. That's still separate, l
 
 ## License
 
-Apache 2.0 — see `LICENSE`.
+Apache 2.0 — see [`LICENSE`](LICENSE).
 
 [^trusted-enough]: Adapted from Elad Meged, *Trusted Enough to Run*, Black Hat USA 2026:
     <https://blackhat.com/us-26/briefings/schedule/?#trusted-enough-to-run-breaking-ai-agents-in-official-workflows-53406>.
