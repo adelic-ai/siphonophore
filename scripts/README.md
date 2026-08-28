@@ -1,9 +1,11 @@
 # Privilege separation for siphonophore-core
 
 Lets the broker process run genuinely unprivileged (not root) while still using the
-`uid_cgroup`/`uid_cgroup_checkin` execution tiers. See `HISTORY.md`'s "broker-root-privilege gap"
-entry for why this exists, and `DESIGN.md`'s "Explicitly open" section for what this does and
-does not close.
+`uid_cgroup`/`uid_cgroup_checkin` execution tiers. Three pieces together achieve this: the two
+one-time deployment mechanisms below (`useradd`/`userdel` delegation, cgroup v2 delegation), plus
+`spawn_helper/siphonophore-spawn` — a separate, per-execution privileged helper, see
+`contracts/spawn_helper.md` — for the one remaining step neither of these two closes (§3 below). See
+`HISTORY.md`'s "broker-root-privilege gap" entry for why this exists.
 
 Two separate mechanisms, both one-time deployment setup, neither is per-execution:
 
@@ -40,10 +42,27 @@ sudo chown broker-user:broker-group /sys/fs/cgroup/siphonophore-core
 No code change needed for this half -- it's the same code path whether the directory was created
 by root ahead of time (then delegated) or is created by a root broker directly, as it is today.
 
-## What this does not yet solve
+## 3. The remaining piece: `preexec_fn`'s privilege-drop step, closed by `siphonophore-spawn`
 
-The `preexec_fn` privilege-drop step (spawning the artifact process under the target ephemeral
-uid) still requires the *forking* process to already be root -- an unprivileged broker cannot
-`os.setuid()` to an arbitrary target uid itself. That needs either `sudo -u '#<uid>'` (letting sudo
-perform the switch) or Linux user namespaces (`unshare --user` + `newuidmap`/`newgidmap`), and
-which one actually holds up hasn't been validated yet. See `DESIGN.md`'s open questions.
+The `preexec_fn` privilege-drop step (spawning the artifact process under the target ephemeral uid)
+requires the *forking* process to already be root — an unprivileged broker cannot `os.setuid()` to
+an arbitrary target uid itself. **This is solved, not open.** `spawn_helper/siphonophore-spawn` (see
+`contracts/spawn_helper.md`) is a minimal, narrowly-scoped privileged helper, invoked via an exact,
+argument-free `sudo` command, that performs exactly this step on the broker's behalf — the broker's
+own Python process never needs to hold uid 0. `SpawnHelperBackend`
+(`siphonophore_core/execution_spawn_helper.py`) and `CheckedInSpawnHelperBackend`
+(`siphonophore_core/execution_spawn_helper_checkin.py`) wire this into the normal `Executor` dispatch
+path for the `uid_cgroup` and `uid_cgroup_checkin` execution classes respectively, alongside (not
+replacing) the root-requiring `UidCgroupBackend`/`CheckedInUidCgroupBackend` — a deployment chooses
+which backend to register per class.
+
+Add `siphonophore-spawn`'s own sudoers grant (its exact, argument-free invocation is specified in
+`contracts/spawn_helper.md`'s "Invocation shape" section) alongside the `useradd`/`userdel` grant
+above to let a genuinely unprivileged broker use these execution classes without running as root
+itself.
+
+What `siphonophore-spawn` does and does not establish is a separate, important distinction — see
+`contracts/spawn_helper.md`'s `SH-23` section: it proves execution-identity consistency and replay
+prevention (at most one real spawn per `execution_id`), not that the spawn it was asked to perform
+was ever authorized by a real Gate Decision. That check happens one layer up, inside the broker,
+before the helper is ever invoked.
