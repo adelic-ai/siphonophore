@@ -255,7 +255,12 @@ necessarily provides one.
 
 - Python ≥ 3.10
 - Real root on real Linux with cgroup v2 for the `uid_cgroup` / `uid_cgroup_checkin` execution
-  tiers and their tests. Everything else is portable.
+  tiers and their tests. Everything else is portable. On macOS (or any host without a real Linux
+  kernel), this project's own testing used [colima](https://github.com/abiosoft/colima) — a
+  lightweight Linux VM manager — to get one: `colima start` provisions a real Linux VM with cgroup v2
+  by default, and `colima ssh` opens a shell inside it. Any real Linux host with cgroup v2 works the
+  same way; colima is simply how this project's own validation was actually done, not a requirement
+  of the code itself.
 - A C11-capable `cc` only when building `spawn_helper/siphonophore-spawn`.
 
 ## Installation
@@ -283,7 +288,11 @@ Portable tests require no special privileges.
 
 Tests marked `linux_root_only` require real root on real Linux with cgroup v2. They exercise real
 system-user provisioning, cgroups, privilege drops, concurrent Unix-socket check-ins, kernel
-identity verification, and the privileged C helper rather than mocked equivalents.
+identity verification, and the privileged C helper rather than mocked equivalents. Several of them
+provision their own real, narrow sudoers grant and a real test user as part of the test itself
+(written to `/etc/sudoers.d/`) — no manual sudoers setup is needed beforehand, but `pytest` itself
+must be run as root (e.g. inside a root shell in the colima VM) rather than expecting individual
+`sudo` calls partway through a run.
 
 ## Running the live harness
 
