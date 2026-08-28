@@ -156,9 +156,9 @@ test in the same file drives the identical composition with two real, independen
   when to delegate, spins up a second agent, or picks its model in a live deployment; today that's
   done by hand (test code, or `examples/repl.py` if extended).
 - Container and VM execution substrates are not implemented.
-- Platform attestation and production credential delivery are not implemented — including any
-  execution-specific identity mechanism (SPIFFE/SPIRE, JWT+Vault, or otherwise). See
-  [`docs/EXECUTION.md`](docs/EXECUTION.md) for the architectural direction, not a built mechanism.
+- Platform integrity/attestation is not implemented (see `DESIGN.md` §8). Production credential
+  delivery is also not implemented — SPIFFE/SPIRE and JWT+Vault were both considered and neither was
+  committed to. See [`docs/EXECUTION.md`](docs/EXECUTION.md).
 - `Scope` currently constrains intent kinds and delegation depth. Resource- and payload-level
   constraints are deliberately deferred.
 - Multi-model support currently exists at the model-interface level; orchestration of multiple live

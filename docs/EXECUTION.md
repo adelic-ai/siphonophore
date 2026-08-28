@@ -60,9 +60,11 @@ low-consequence intent silently inheriting a root broker's full privilege.
   has actually been built or tested.
 - **Credentials** — a related, deliberately separate question from execution identity: what machine
   identity or credentials a specific authorized execution needs to act on anything beyond the local
-  host (an API call, a cloud resource, a downstream service). Not implemented: no mechanism here
-  ties credential delivery to a specific authorized execution rather than whatever ambient
-  credentials the executing process already happens to hold.
+  host (an API call, a cloud resource, a downstream service). Candidate mechanisms were considered —
+  a SPIFFE/SPIRE-issued workload identity for narrowly-scoped work, short-lived Vault-issued JWTs for
+  more free-form work — but neither was committed to. Nothing here ties credential delivery to a
+  specific authorized execution today; ambient credentials are whatever the executing process
+  already happens to hold.
 - **Filesystem policy, network policy, resource limits** — named as real dimensions this model
   should eventually constrain per-execution, not currently enforced by any Siphonophore component
   beyond whatever the chosen substrate (e.g., a future container backend) would provide natively.
