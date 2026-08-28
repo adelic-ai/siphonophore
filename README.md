@@ -10,10 +10,10 @@ action may run, and cryptographically binds both into the decision consumed by t
 
 ## Why this exists
 
-Siphonophore began with a question about multi-agent execution. Agent SDKs such as Strands let a
-parent agent delegate to sub-agents that are clearly distinguished at the harness level — but in the
-`Agent.as_tool()` path examined during this project, those sub-agents can execute in-process, under
-the same Unix process and UID as their parent. The logical identity the harness tracks doesn't
+Siphonophore began with a question about multi-agent execution. Agent SDKs such as Strands and
+OpenClaw let a parent agent delegate to sub-agents that are clearly distinguished at the harness
+level — but in the `Agent.as_tool()` path examined during this project, those sub-agents can execute
+in-process, under the same Unix process and UID as their parent. The logical identity the harness tracks doesn't
 disappear or become ill-defined; it stays perfectly well-formed inside the application. What's
 missing is something else: an operating system observing that process sees one shared execution
 identity, not the harness's own distinctions, so nothing outside the harness's own trust domain can

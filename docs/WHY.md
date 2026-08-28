@@ -2,10 +2,10 @@
 
 Siphonophore began with a question about multi-agent execution.
 
-Agent SDKs such as Strands provide useful abstractions for composing and orchestrating multiple
-agents. Those agents are logical identities inside an application — clearly distinguished at the
-harness level — but that harness-level distinction is not the same thing as an independent execution
-identity at the operating-system boundary.
+Agent SDKs such as Strands and OpenClaw provide useful abstractions for composing and orchestrating
+multiple agents. Those agents are logical identities inside an application — clearly distinguished at
+the harness level — but that harness-level distinction is not the same thing as an independent
+execution identity at the operating-system boundary.
 
 In the Strands `Agent.as_tool()` path examined during this project, a parent and its sub-agents can
 execute in-process under the same Unix process and UID. Strands can distinguish those agents at the
