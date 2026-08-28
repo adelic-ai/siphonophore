@@ -2,8 +2,9 @@
 
 **Mediated, attributable execution for agent systems.**
 
-Siphonophore is an experimental SDK and reference harness for making authority, execution identity,
-and machine effects independently checkable across agent execution boundaries.
+Siphonophore is an experimental execution-security SDK, with a reference harness demonstrating how
+delegated authority, execution requirements, and machine effects can remain independently checkable
+across agent execution boundaries.
 
 It separates the authority to perform an action from the execution requirements under which that
 action may run, and cryptographically binds both into the decision consumed by the execution layer.
@@ -56,11 +57,12 @@ artifact substitution is refused before the privileged execution boundary ever r
 authentic execution identity lying about what it did does not become corroborated merely because its
 identity is real.
 
-It is not yet a complete multi-agent, multi-model harness. Two independently running `CognitiveLoop`
-instances, sharing one `Gate`/`Broker`, compose correctly — one holding its own root `Authority`, the
-other holding an `Authority` delegated from the first, each producing its own model-generated intent.
-What doesn't exist yet is an *orchestration* component: something that decides when to delegate,
-constructs the second loop, and supplies its own model, in a live deployment rather than a test.
+The reference harness is not yet a complete multi-agent, multi-model harness. Two independently
+running `CognitiveLoop` instances, sharing one `Gate`/`Broker`, compose correctly — one holding its
+own root `Authority`, the other holding an `Authority` delegated from the first, each producing its
+own model-generated intent. What doesn't exist yet is an *orchestration* component: something that
+decides when to delegate, constructs the second loop, and supplies its own model, in a live
+deployment rather than a test.
 That's harness/product capability, not a missing piece of the security architecture — the thesis is
 demonstrated without it.
 
@@ -190,12 +192,12 @@ process asserts about itself. Full treatment: `DESIGN.md` §4.
 
 ## Relationship to other agent systems
 
-Siphonophore is not an agent SDK, and doesn't compete with one. Systems like Strands and OpenClaw can
-supply cognition, logical agent identity, models, tool ecosystems, and orchestration — real,
-substantial engineering problems Siphonophore doesn't attempt to solve. What Siphonophore is
-concerned with sits at a narrower boundary: whether the authority behind a security-relevant effect
-stays independently checkable at the moment that effect becomes real execution, regardless of which
-harness produced the intent to perform it.
+Siphonophore is not an agent-development SDK and doesn't compete with one. Systems like Strands and
+OpenClaw can supply cognition, logical agent identity, models, tool ecosystems, and orchestration —
+real, substantial engineering problems Siphonophore doesn't attempt to solve. Siphonophore is an
+execution-security SDK concerned with a narrower boundary: whether the authority behind a
+security-relevant effect stays independently checkable at the moment that effect becomes real
+execution, regardless of which harness produced the intent to perform it.
 
 Siphonophore does not currently integrate with Strands, OpenClaw, or any other agent harness — both
 are referenced here only as examples of the class of system this project could sit beneath. Doing so
