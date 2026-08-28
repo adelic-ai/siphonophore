@@ -33,8 +33,9 @@ architecture: **[`docs/WHY.md`](docs/WHY.md)**.
 
 ## Current state — August 2026
 
-**Siphonophore now demonstrates its central architectural claim end to end**, against real Linux OS
-boundaries, not just as separately-validated primitives:
+**Siphonophore demonstrates its core authority-to-execution properties composing together in one
+real, Linux-backed test path** — not merely as separately-validated primitives, and not as a single
+uniform, universally-independent guarantee:
 
     delegated bounded Authority
         → Broker.dispatch()
@@ -42,15 +43,25 @@ boundaries, not just as separately-validated primitives:
         → Decision
         → Executor
         → real OS-backed execution
-        → independently verified evidence
+        → evidence, reconciled where invoked
+
+Each arrow is a distinct relation, established by a different mechanism: cryptographic
+re-verification for authority and decision binding, a kernel-established fact for execution identity
+specifically where check-in is used, and a policy-neutral comparison for reconciliation. All of it
+holds conditional on the integrity of the one broker process holding the Gate's signing secret — see
+`DESIGN.md` §9 for exactly what the delegation chain's provenance fields do and do not prove, and the
+"Trust boundaries" section below for the broker's role as the shared trust root every relation here
+is ultimately conditional on.
 
 The current Linux implementation instantiates "real OS-backed execution" as a genuine ephemeral UID
-and cgroup v2 leaf per execution, and "independently verified evidence" as a kernel-verified
-(`SO_PEERCRED`) check-in reconciled against an untrusted self-report. **A distinct UID is an
-execution mechanism, not the identity model** — the architecture doesn't require, and current policy
-doesn't grant, a separate OS identity to every agent or sub-agent. See
-[`docs/EXECUTION.md`](docs/EXECUTION.md) for why execution controls are a set of independent
-dimensions rather than one fixed ladder every agent climbs.
+and cgroup v2 leaf per execution — see the "Real OS-level execution identity" bullet below for which
+execution class establishes that identity independently of the executing process, and which does
+not. "Evidence, reconciled where invoked" means the Belnap-logic comparison of self-report against
+independently-collected ground truth runs only when a caller supplies `outdir`; it is not a property
+of every dispatch. **A distinct UID is an execution mechanism, not the identity model** — the
+architecture doesn't require, and current policy doesn't grant, a separate OS identity to every agent
+or sub-agent. See [`docs/EXECUTION.md`](docs/EXECUTION.md) for why execution controls are a set of
+independent dimensions rather than one fixed ladder every agent climbs.
 
 The negatives are part of this claim, not an appendix: out-of-scope delegated authority is refused,
 artifact substitution is refused before the privileged execution boundary ever runs, and a genuinely
@@ -83,10 +94,13 @@ Today, Siphonophore demonstrates:
   other objects. A leaked delegated `Authority` remains exploitable indefinitely within its scope;
   narrowing this is orchestration-layer design work, not yet built. Full model: `DESIGN.md` §9.
 
-- **Real OS-level execution identity** — the `uid_cgroup` / `uid_cgroup_checkin` backends provision a
-  genuine ephemeral system user and real cgroup v2 leaf per execution. Check-in independently
-  establishes the spawned process's identity through the kernel (`SO_PEERCRED`) rather than accepting
-  an identity asserted by the process itself.
+- **Real OS-level execution identity** — the `uid_cgroup` and `uid_cgroup_checkin` backends both
+  provision a genuine ephemeral system user and real cgroup v2 leaf per execution. **Only
+  `uid_cgroup_checkin` independently establishes that identity through the kernel** (`SO_PEERCRED`) —
+  a live check-in the executing process cannot forge or assert its way past. Plain `uid_cgroup`
+  provisions the identical real UID/cgroup but reads its own identity from `/proc`, in the same
+  process asserting the rest of the chain — a genuine kernel fact, but not independently
+  cross-checked by anything else.
 
 - **Execution requirements bound to authorization** — policy currently selects among `same_process`,
   `separate_process`, `uid_cgroup`, and `uid_cgroup_checkin`. The selected execution class is
@@ -101,8 +115,14 @@ Today, Siphonophore demonstrates:
 - **`siphonophore-spawn`** — a minimal, dependency-free C helper for crossing the narrow privileged
   boundary UID/cgroup execution requires, without running the entire broker as root. Wired into the
   normal `Executor` dispatch path (`SpawnHelperBackend`); confirmed running under a real unprivileged
-  system user, not just as root. A finished execution's cgroup leaf is not automatically removed — a
-  disclosed, deliberate limitation (see `DESIGN.md`), not an oversight.
+  system user, not just as root. **What the helper establishes: execution-identity consistency and
+  replay prevention** — at most one real spawn per `execution_id`. **What it does not, and
+  structurally cannot, establish: that the `execution_id` it was asked to spawn corresponds to a
+  Decision `Gate.submit()` actually minted.** That check runs one layer up, inside the broker, before
+  the helper is ever invoked — sound as long as the broker process itself has not been compromised.
+  See `contracts/spawn_helper.md`'s `SH-23` section for the full trust-boundary statement. A finished
+  execution's cgroup leaf is not automatically removed — a disclosed, deliberate limitation (see
+  `DESIGN.md`), not an oversight.
 
 - **Independent evidence and reconciliation** — execution check-in and OS observations are a channel
   distinct from agent self-report. `audit.py` uses
@@ -122,12 +142,12 @@ Today, Siphonophore demonstrates:
   including the execution-identity-versus-logical-agent-identity distinction:
   [`docs/EVIDENCE.md`](docs/EVIDENCE.md).
 
-One real test (`tests/test_harness_loop_linux.py`) demonstrates this entire chain in a single
-composed execution, including a negative case: a delegate whose real check-in verifies but whose
+One real test (`tests/test_harness_loop_linux.py`) demonstrates this full composition in a single
+execution, including a negative case: a delegate whose real check-in verifies but whose
 self-report lies about what it did reconciles as `contradiction`/`unreported_activity`, never
 `corroborated` — a genuine identity plus a false claim is still refused as confirmation. A separate
-test in the same file drives the identical chain with two real, independently running `CognitiveLoop`
-instances instead of a single test actor.
+test in the same file drives the identical composition with two real, independently running
+`CognitiveLoop` instances instead of a single test actor.
 
 ### Not yet implemented or integrated
 
