@@ -1,10 +1,11 @@
-# siphonophore — an SDK for mediated, attributable agent harnesses
+# siphonophore — an execution-security SDK, with a reference harness
 
-An SDK, and a reference harness built from it, for constructing agent systems where every
-effect-producing action is mediated by a single authority boundary and independently attributable —
-not a framework for building agents faster, a framework for making it structurally impossible for
-an agent's actions to escape attribution. See `HISTORY.md` for how this design was arrived at and
-what's been learned building toward it; this document states only the design itself.
+An execution-security SDK — and a minimal reference harness built from it — for constraining every
+effect-producing action to pass through a single authority boundary and remain independently
+attributable. Not a framework for building agents faster, and not a general-purpose
+agent-development SDK: the reference harness demonstrates the architecture, it is not what the
+architecture is about. See `HISTORY.md` for how this design was arrived at and what's been learned
+building toward it; this document states only the design itself.
 
 ## §0 — Study Strands, don't depend on Strands
 
@@ -231,7 +232,7 @@ performs those calls and constructs each loop with the `Authority` it should hol
 DESIGN.md's own delegation model already required. See §9's "Explicitly open" notes for what
 remains genuinely open in this area.
 
-## §8 — Platform attestation is a separate, lower layer than execution identity
+## §8 — Platform integrity is out of scope
 
 Everything in §2 and §3 — a provisioned uid, a cgroup, a check-in protocol verified by the kernel —
 only means anything if the kernel doing the verifying is itself trustworthy. Those mechanisms
@@ -240,44 +241,15 @@ anything about the host itself — a compromised kernel can lie about uids, cgro
 `SO_PEERCRED` just as easily as a compromised agent can lie about what it did. This is a different
 question, at a different granularity, and must not be conflated with per-execution identity.
 
-Platform attestation answers it once, not per-intent: at broker startup, not at every Decision. A
-hardware root of trust (a TPM quote) establishes independently verifiable evidence about the node's
-identity and its measured state at the moment of the quote — signed PCR values, bound to a fresh
-nonce so the evidence can't be replayed from an earlier boot. Stated precisely, because a quote is
-easy to overclaim: it proves possession of a platform-bound key and the freshness and integrity of
-the *specific measurements taken*, not that "the host hasn't been tampered with" in any general
-sense. What those measurements actually cover — firmware and boot chain at minimum; the broker's own
-binary and configuration only if something extends measurement that far (an IMA-style scheme, or
-equivalent) — determines what the evidence is actually evidence *of*. Per-execution identity (§2)
-and check-in (§3) then bind individual mediated executions to whatever platform context was
-established this way; they are only as strong as what that evidence actually covers, not
-automatically as strong as "the whole host is clean."
-
-**Execution provenance is a distinct concern from platform attestation, sitting between it and §2's
-runtime identity, and deserves to be treated as its own extension of §2 rather than folded into
-either neighbor.** A provisioned uid and cgroup identify *which running process* is being observed;
-they say nothing about whether that process is running the code the broker actually meant to
-authorize. Where the Gate's dispatch selects an execution class (§2), it should also carry an
-artifact identity — a content digest of the code/recipe being executed, not just an import path or
-task-type label — so that what got authorized and what actually ran can be compared, the same
-binding discipline §2 already requires for every other dispatch-relevant field.
-
-The attestor that performs platform attestation is a customizable mechanism, not a hard requirement
-baked into every conformant harness (§6) — TPM hardware is not universal, and a harness running
-where none exists cannot attest what isn't there. What is required: when a harness does claim
-platform attestation, it must be structurally impossible for a per-execution identity (§2) to be
-granted, or a check-in (§3) to be trusted, without that host having already passed attestation for
-the current boot — platform attestation is the base of the trust chain the rest of this design
-stands on, never a parallel, optional check running alongside it.
-
-**Left genuinely open, not resolved by this section: who attests the broker's own integrity.**
-Platform attestation covers the node; §2's proposed execution provenance covers what the broker
-chooses to run; neither covers whether the broker binary and configuration doing the choosing is
-itself the expected one. That may collapse into platform measurement (if measurement is extended to
-cover the broker, it becomes part of establishing the node's state, not a separate step) or it may
-be a supply-chain/deployment-time concern (code signing, reproducible builds) outside the runtime
-attestation chain entirely, resolved before the broker ever starts rather than by anything it checks
-about itself at startup. Which of these it actually is has not been decided here.
+Nothing in this project establishes or verifies platform integrity, and nothing verifies the
+integrity of the broker process itself — the process holding the `Gate`'s signing secret. That
+process is this system's actual trust root: every cryptographic re-verification, every
+kernel-checked identity, and every reconciliation this design performs is sound conditional on that
+one process not having been compromised. §4's "every trust boundary is named" discipline applies
+here too — this boundary is named, not closed. Establishing platform or broker integrity
+independently of the process itself is a real, harder problem this project does not attempt to
+solve; it belongs to a different, lower layer than the authority-to-execution mediation this design
+covers.
 
 ## §9 — Order, Authority, Scope: delegated authority is a distinct model from execution requirements
 
@@ -351,24 +323,22 @@ signed, auditable "no," the same shape any other policy denial already takes.
 
 ## Explicitly open, not yet resolved
 
+Not everything below is a near-term roadmap item. Some of these questions turned out, on inspection,
+to require a more general and rigorous treatment than a single implementation like this one should
+try to absorb — closing them well means answering questions about authority-to-execution binding
+broader than what this specific vertical slice was built to demonstrate. This project remains a
+concrete, working experimental system; the items below are named honestly as open, not as signs the
+system is unfinished or being set aside.
+
 - The gate↔cognitive-loop protocol (MCP-native vs. something narrower) — §1 names it as a
   candidate, not a decision.
-- Whether §3's four-valued reconciliation, once genuinely exercised across contradiction and
-  unreported-activity cases (not just the corroborated case), needs a richer comparison than plain
-  equality — e.g. partial matches, or claims that are ambiguous rather than cleanly true/false. A
-  sharper version of the same question: reconciliation today compares exactly two booleans
-  (claimed, observed), but a checked-in execution actually produces three independent signals —
-  whether identity was established (check-in), whether a claim was made (self-report), and whether
-  an effect was observed (ground truth). Collapsing "identity failed but an effect was still
-  observed" into the same four-valued space as "identity held but the claim was false" may be
-  losing a real distinction, not yet exercised because no current backend can produce that case
-  (§2's `uid_cgroup_checkin` gates its own artifact code on check-in success, so an unattributed
-  observed effect cannot currently occur through it — see the `uid_cgroup_checkin` bullet below for
-  why that guarantee is specific to this one backend's wrapper, not architectural).
-- An org/firm layer above an individual human Principal — §9's Order/Authority chains now represent
-  real, multi-hop delegation lineage (previously: none existed at all), but `principal_id` is still a
-  bare string throughout, with no representation of an organization a principal belongs to, and no
-  real `Principal` class exists despite §6's module layout having anticipated one from early on.
+- §3's reconciliation compares exactly two booleans (claimed, observed) via plain equality — richer
+  comparisons (partial matches, ambiguous claims, or treating check-in success/failure as a third
+  independent signal alongside claimed/observed) are a real generalization this project has not
+  built and is not pursuing here.
+- `principal_id` is a bare string throughout, with no organization/tenant representation above an
+  individual principal, and no real `Principal` class exists despite §6's module layout having
+  anticipated one early on.
 - §9's Scope is deliberately minimal (kind-membership and delegation-depth only) — per-payload or
   per-resource delegation constraints (e.g. "may write_file only under a specific path") are real,
   plausible future need, not yet justified by anything actually built that needs them.
@@ -395,33 +365,14 @@ signed, auditable "no," the same shape any other policy denial already takes.
   things, not that Siphonophore includes such an orchestrator.
 - Whether "same process" should ever be a default execution class, or whether §2's policy should
   require an explicit, justified exception to stay in-process rather than treating it as a default.
-- §8's platform attestation is undesigned below the level stated: no attestor implementation
-  exists, and the exact mechanics (which TPM tooling, how a quote's PCR values map to "expected,"
-  how a harness without TPM hardware degrades — refuses to start, or runs with attestation
-  explicitly disclosed as absent rather than silently skipped) are all unresolved.
-- §8's execution provenance is implemented and tested (`lab/008`, and combined with `uid_cgroup` in
-  `lab/009`) as an inline-code digest. Real deployments would more likely authorize a *reference*
-  (a module path, a container image digest, a package version) rather than inline source — what
-  exactly gets hashed for a reference-based artifact, and how that generalizes past inline strings,
-  remains open.
-- Whether broker-integrity attestation is a platform-measurement concern or a supply-chain/
-  deployment-time concern — §8 names the question without answering it.
-- §3's check-in protocol and reconciliation are now wired into the `uid_cgroup_checkin` execution
-  class via TWO backends — `CheckedInUidCgroupBackend` (`preexec_fn`, requires real root) and
-  `CheckedInSpawnHelperBackend` (`siphonophore-spawn`, unprivileged-broker-compatible) — rather than
-  staying freestanding primitives. The latter reuses `identity.py`/`audit.py` entirely unchanged,
-  and required no change to `siphonophore-spawn.c` or `contracts/spawn_helper.md`: the nonce channel
-  `SH-09`/`SH-24` already defines was simply exercised for the first time. Still true, unchanged by
-  this: a `same_process` or `separate_process` delegation has no check-in-gated or
-  automatically-reconciled equivalent. The open question is sharper than "should
-  check-in be the default for delegation": execution substrate (§2: same_process | separate_process
-  | uid+cgroup | container | VM) and required assurance (unverified | process-identified |
-  checked-in | reconciled | externally-observed, per §5) are plausibly two orthogonal axes that
-  `uid_cgroup_checkin` currently conflates into one execution-class name. Naming an assurance level
-  on `Decision` independently of execution class (rather than one execution-class string per
-  substrate×assurance combination) would generalize cleanly, but is not justified yet by only two
-  execution classes carrying any assurance variation — worth deferring until a third combination
-  actually needs it, not building ahead of that pressure.
+- Artifact identity is currently an inline-code digest only (`digest_of()`, §2/§9) — authorizing a
+  *reference* (a module path, a container image digest, a package version) instead of inline source
+  is not implemented.
+- Check-in and reconciliation are wired into `uid_cgroup_checkin` via two backends —
+  `CheckedInUidCgroupBackend` (`preexec_fn`, requires real root) and `CheckedInSpawnHelperBackend`
+  (`siphonophore-spawn`, unprivileged-broker-compatible). `same_process` and `separate_process` have
+  no check-in-gated or automatically-reconciled equivalent — a current limitation of those two
+  classes specifically, not something either backend or this design attempts to generalize here.
 - `uid_cgroup_checkin`'s guarantee that a check-in failure cannot co-occur with an
   already-performed artifact effect is a property of its own wrapper (`_CHECKIN_CHILD_WRAPPER` gates
   `intent.artifact_code` on `perform_checkin()` succeeding first), not something the architecture
@@ -431,44 +382,17 @@ signed, auditable "no," the same shape any other policy denial already takes.
   `observations` for exactly this reason, but nothing today distinguishes "nothing happened" from
   "something happened, attribution is invalid" at the type level.
 - A broker process that wants both the `uid_cgroup`/`uid_cgroup_checkin` tiers and the portable
-  tiers available has to run entirely as root today. Three separate pieces, closed unevenly:
-  `same_process`/`separate_process` refuse outright rather than silently inheriting root (raise
-  unless a caller passes `allow_root=True` — closes the silent case). `useradd`/`userdel` now go
-  through privilege separation for real — two self-validating wrapper scripts
-  (`scripts/siphonophore-useradd`/`-userdel`), elevated via a scoped `sudo -n` only when not
-  already root (`scripts/README.md`), validated on colima with a genuinely unprivileged user and a
-  real sudoers grant, not just reasoned through. Cgroup management needs only delegation (`chown` a
-  subtree once, no code change) — documented, not yet exercised end-to-end with an unprivileged
-  broker. **Still fully open, but the interface is now pinned:** the `preexec_fn` privilege drop
-  that spawns the artifact process under its target uid still requires the *forking* process to
-  already be root — no unprivileged broker can perform that step itself yet.
-  `contracts/spawn_helper.md` (PINNED) defines the narrowly-privileged helper that closes this — an
-  exact-argument-free `sudo` invocation, one multiplexed stdin stream crossing that boundary,
-  genuinely separate fds past it. **Implemented and validated for real on colima**
-  (`spawn_helper/siphonophore-spawn.c`, `tests/test_spawn_helper_linux.py`) — every `SH-NN`
-  invariant has a passing test exercised against a genuinely unprivileged `sudo`-mediated
-  invocation, not just reasoned through. **Now wired in and validated end-to-end**:
-  `SpawnHelperBackend` (`siphonophore_core/execution_spawn_helper.py`) is a real `ExecutionBackend`
-  for the `uid_cgroup` class, registered exactly like `UidCgroupBackend` — a deployment chooses
-  which one to register, `Gate`/`Executor`/`Decision` are unaware of the difference.
-  `tests/test_execution_spawn_helper_linux.py` runs the actual dispatch code inside a real,
-  unprivileged system user via `sudo -u`, not just as root — the broker's own Python process is
-  confirmed never holding euid 0, the artifact lands under a genuine, different ephemeral uid, and
-  Executor's existing Decision/artifact-digest verification is confirmed still running before the
-  helper is ever invoked. **A closed limitation, not solved here and not silently worked around:**
-  `SpawnHelperBackend` does not remove a finished execution's cgroup leaf — delegating `CGROUP_ROOT`
-  to the broker for cleanup, or adding a separate broker-triggerable removal path, would let a
-  broker delete a finished leaf and replay the same `execution_id` through the helper again,
-  defeating `SH-23`'s one-real-spawn-ever property rather than just its concurrent-reuse guarantee.
-  Left as a disclosed, low-cost limitation (an empty cgroup v2 leaf is a near-zero-weight kernfs
-  entry) rather than building the thing that would weaken it. **What this helper explicitly does
-  not, and structurally cannot,
-  close: whether the broker's own request was ever authorized by `Gate.submit()` in the first
-  place.** The helper's `SH-23` invariant provides execution-identity consistency and replay
-  prevention (at most one spawn per `execution_id`), not an independent attestation of Gate
-  authorization — the helper has no access to the Gate's own secret, and giving it one would expand
-  its trusted surface rather than narrow it. This is the same gap this section already names: a
-  broker whose own process is compromised already holds the Gate's secret and needs no help from
-  `siphonophore-spawn` to mint a valid `Decision` for anything it wants. **Authorization belongs
-  above the execution substrate** — closing this for real is a question of who attests the broker's
-  own integrity, not something a spawn helper can be made to answer by construction.
+  tiers available previously had to run entirely as root. This is now closed: `same_process`/
+  `separate_process` refuse outright rather than silently inheriting root (`allow_root=True`
+  required); `useradd`/`userdel` go through privilege separation via two self-validating wrapper
+  scripts (`scripts/README.md`), validated on colima with a real sudoers grant; cgroup management
+  needs only ownership delegation, no code change; and the `preexec_fn` privilege-drop step is
+  closed by `siphonophore-spawn` (`contracts/spawn_helper.md`), implemented, validated on colima,
+  and wired into `SpawnHelperBackend`/`CheckedInSpawnHelperBackend`. A deployment chooses which
+  backend to register per execution class; `Gate`/`Executor`/`Decision` are unaware of the
+  difference. Two limitations remain, both disclosed rather than silently worked around: finished
+  executions' cgroup leaves are not automatically removed (an empty cgroup v2 leaf is a
+  near-zero-weight kernfs entry — the cost of building safe cleanup was judged not worth it); and
+  the helper cannot establish that the broker's own request was ever authorized by a real
+  `Gate.submit()` call in the first place — see `contracts/spawn_helper.md`'s `SH-23` section for
+  the precise statement of what the helper does and does not prove.

@@ -60,19 +60,16 @@ low-consequence intent silently inheriting a root broker's full privilege.
   has actually been built or tested.
 - **Credentials** — a related, deliberately separate question from execution identity: what machine
   identity or credentials a specific authorized execution needs to act on anything beyond the local
-  host (an API call, a cloud resource, a downstream service). The intended property is that
-  credentials follow the specific authorized execution rather than being ambient credentials every
-  agent in a shared harness inherits merely by running inside it — a narrowly scoped workload might
-  eventually receive a SPIFFE/SPIRE-issued identity, a more free-form one short-lived credentials via
-  Vault-issued JWTs. Neither technology is committed to; nothing here is implemented today.
+  host (an API call, a cloud resource, a downstream service). Not implemented: no mechanism here
+  ties credential delivery to a specific authorized execution rather than whatever ambient
+  credentials the executing process already happens to hold.
 - **Filesystem policy, network policy, resource limits** — named as real dimensions this model
   should eventually constrain per-execution, not currently enforced by any Siphonophore component
   beyond whatever the chosen substrate (e.g., a future container backend) would provide natively.
 
-## Platform attestation is a separate, lower layer
+## Platform integrity is a separate, lower layer
 
 Everything above establishes *which process, on this host, did this* on a given occasion. It says
-nothing about whether the host itself — the kernel doing the verifying — is trustworthy. That's a
-different question, at a different granularity, answered once at broker startup rather than
-per-execution. Not designed in detail and not implemented; see `DESIGN.md` §8 for the full
-discussion, including who would attest the broker's own integrity — left genuinely open.
+nothing about whether the host itself, or the kernel doing the verifying, is trustworthy — a
+different question, at a different granularity, that this project does not attempt to solve. See
+`DESIGN.md` §8.
