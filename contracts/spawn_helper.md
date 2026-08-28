@@ -382,9 +382,11 @@ originally confirmed the nonce's own argv-avoidance for real rather than assumin
     a descriptor actually, verifiably proves versus what the prose claims it proves.
   - `SH-20`'s ordering invariant updated to reference the seal-then-verify step explicitly.
 
-## Next step
+## Status
 
-Implemented. What remains is integration: `siphonophore-spawn` is not yet wired into an
-`ExecutionBackend` that `Executor` actually dispatches to -- today it's a standalone, validated
-mechanism, invoked manually or from tests, not from the broker's own real execution path. Wiring it
-in (a new backend, or an unprivileged-mode branch of `UidCgroupBackend`) is separate, later work.
+Implemented and integrated: `siphonophore-spawn` is wired into `SpawnHelperBackend`
+(`siphonophore_core/execution_spawn_helper.py`) and `CheckedInSpawnHelperBackend`
+(`siphonophore_core/execution_spawn_helper_checkin.py`), dispatched through the normal `Executor`
+path for the `uid_cgroup` and `uid_cgroup_checkin` execution classes respectively -- not invoked
+only manually or from tests. `tests/test_execution_spawn_helper_linux.py` runs the actual dispatch
+code under a genuinely unprivileged broker subprocess.

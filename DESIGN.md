@@ -35,7 +35,7 @@ an intent that wants to become a real-world effect. All three go through the sam
 tool registry for one and a bare function call for another.
 
 ```
-Principal → Intent → Mediation (Gate) → Authority decision → Execution identity → Effect → Independent evidence
+Principal → Intent → Mediation (Gate) → Authority decision → Execution identity → Effect → evidence, reconciled where invoked
 ```
 
 The cognitive loop never executes or holds anything directly — no credential, no filesystem path,
@@ -207,9 +207,7 @@ requirement with the corrected one: **a delegated principal's authority must be 
 from a verified parent Authority, tracing to a real Order, never exceeding what the parent itself
 could grant, checked independently at the point it's exercised** — and the exercise of that authority
 still reduces to the ordinary `Gate.submit()` → `Executor.execute()` path once granted, which is the
-part of the original claim that was actually correct. Only after both this and the Gate-cannot-be-
-bypassed proof above are demonstrated, not merely asserted, does any of this get formalized into a
-public SDK API.
+part of the original claim that was actually correct.
 
 **Both are now demonstrated, not merely stated as the requirement.** One composed execution
 (`tests/test_harness_loop_linux.py`) exercises the corrected requirement in full: a delegated,
