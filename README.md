@@ -149,6 +149,19 @@ self-report lies about what it did reconciles as `contradiction`/`unreported_act
 test in the same file drives the identical composition with two real, independently running
 `CognitiveLoop` instances instead of a single test actor.
 
+### Research status
+
+Active development of Siphonophore is currently paused. Building this implementation surfaced a
+broader question — how delegated authority, execution binding, and independently verifiable
+evidence compose in general — that turned out to be more general and abstract than this project's
+own architecture should try to absorb. That question is now being investigated separately, in a
+private research project, rather than by adding more mechanisms here.
+
+This doesn't make Siphonophore finished, complete, or superseded. It remains the concrete
+experimental implementation where these questions first became operational and testable — including
+the limitations documented below and in `DESIGN.md`. Read the list below as exactly that: documented
+gaps in a paused implementation, not an active roadmap.
+
 ### Not yet implemented or integrated
 
 - `CognitiveLoop` can hold and exercise a delegated `Authority`, and two independently running
