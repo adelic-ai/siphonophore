@@ -52,12 +52,27 @@ UID or cgroup, used for low-consequence work. Both refuse outright if the broker
 euid 0, unless a caller explicitly opts in (`allow_root=True`) — a deliberate guard against a
 low-consequence intent silently inheriting a root broker's full privilege.
 
+## Kubernetes: a first container-substrate backend (experimental, `explore/k8s-substrate-demo`)
+
+`K8sPodBackend` (`siphonophore_core/execution_k8s.py`, execution class `k8s_pod`) runs
+`intent.artifact_code` as a real Pod on a real cluster (proven against `kind`; the same shape is
+expected, not yet proven, against a managed cluster). It is exactly the extension point this file
+described before it existed: a new `ExecutionBackend`, registered under its own execution class,
+touching nothing in `execution.py`/`mediation.py`/`policy.py`/`Broker`/`CognitiveLoop`. Full detail,
+including what it deliberately does not attempt: [`EXECUTION_K8S.md`](EXECUTION_K8S.md).
+
+This confirms, not merely asserts, that adding a substrate requires no change to what `Order`,
+`Authority`, `Intent`, or `Decision` mean — `tests/test_core_no_k8s_vocabulary.py` scans every other
+file in `siphonophore_core` for Kubernetes-specific vocabulary (`Pod`, `Job`, `Namespace`,
+`ServiceAccount`, `Kubernetes`, `kubectl`, `k8s`) and fails if any leaks in.
+
 ## What's architectural direction only, not built
 
-- **Sandbox/namespace, container, VM** — no execution backend for any of these exists. The
-  architecture doesn't make any particular substrate part of the authority model, so adding one is
-  intended to require no change to what `Order`, `Authority`, `Intent`, or `Decision` mean — but none
-  has actually been built or tested.
+- **Sandbox/namespace, VM** — no execution backend for either exists. The architecture doesn't make
+  any particular substrate part of the authority model, so adding one is intended to require no
+  change to what `Order`, `Authority`, `Intent`, or `Decision` mean — Kubernetes (above) is the first
+  substrate to actually confirm that for a container-shaped backend; VM and namespace/sandbox-only
+  tiers remain unbuilt and untested.
 - **Credentials** — a related, deliberately separate question from execution identity: what machine
   identity or credentials a specific authorized execution needs to act on anything beyond the local
   host (an API call, a cloud resource, a downstream service). Candidate mechanisms were considered —

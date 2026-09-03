@@ -21,4 +21,5 @@ include = ["siphonophore_core*", "siphonophore_harness*"]
 testpaths = ["tests"]
 markers = [
     "linux_root_only: needs real root on real Linux (cgroup v2, useradd/userdel) -- run on colima, skipped elsewhere",
+    "k8s_cluster: needs a real reachable Kubernetes cluster (kind by default) -- skipped when kubectl or a cluster isn't available",
 ]
