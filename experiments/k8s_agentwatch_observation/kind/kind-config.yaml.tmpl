@@ -1,0 +1,37 @@
+# Template, not applied directly: {AUDIT_POLICY_PATH} and {AUDIT_LOG_DIR} are absolute host paths
+# substituted in by setup_cluster.py at render time (kind's extraMounts/kubeadmConfigPatches need
+# real absolute paths -- there's no portable relative-path or env-var form in kind's own config
+# schema). Mirrors the pattern in AgentWatch's own demo/k8s/kind-config.yaml (audit-policy-file /
+# audit-log-path / audit-log-format wired into the API server's kubeadm ClusterConfiguration at
+# bootstrap time) -- confirmed this is bootstrap-time-only, not editable on a running cluster,
+# which is exactly why this is a SECOND cluster rather than a reconfiguration of
+# kind-siphonophore-demo.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: {AUDIT_POLICY_PATH}
+        containerPath: /etc/kubernetes/audit-policy.yaml
+        readOnly: true
+      - hostPath: {AUDIT_LOG_DIR}
+        containerPath: /var/log/kubernetes
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            audit-policy-file: /etc/kubernetes/audit-policy.yaml
+            audit-log-path: /var/log/kubernetes/audit.log
+            audit-log-format: json
+          extraVolumes:
+            - name: audit-policy
+              hostPath: /etc/kubernetes/audit-policy.yaml
+              mountPath: /etc/kubernetes/audit-policy.yaml
+              readOnly: true
+              pathType: File
+            - name: audit-logs
+              hostPath: /var/log/kubernetes
+              mountPath: /var/log/kubernetes
+              readOnly: false
+              pathType: DirectoryOrCreate
