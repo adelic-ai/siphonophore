@@ -12,6 +12,56 @@ Siphonophore or changing Siphonophore's execution semantics?
 
 **Result: yes, for the audit-log leg (Stage 1).** See Results below.
 
+## Prerequisites (external to this repo)
+
+Verified against these exact versions/revisions — recorded here as a portability checkpoint after
+a housekeeping/reproducibility review (2026-09-04), not as a hard-enforced requirement:
+
+- **`kind`** v0.33.0, default node image for that version (`kindest/node:v1.37.0`) — not pinned in
+  `kind/kind-config.yaml.tmpl`; a different kind/node-image version is expected to work
+  identically for this experiment's purposes (`audit.k8s.io/v1` JSON has been stable for years),
+  but hasn't itself been tested.
+- **`kubectl`** v1.37.0, and **Docker** (Docker Desktop on macOS during development; a plain Linux
+  Docker Engine is expected to work identically for cluster creation and `docker exec` — this
+  experiment never uses `kind load docker-image`, which is the one command that hit a real
+  Docker-Desktop-specific containerd-image-store bug during the earlier `kind-siphonophore-demo`
+  setup; that bug is therefore not expected to reproduce here regardless).
+- **Outbound network access** from wherever the kind node's containerd runs, to pull
+  `python:3.12-slim` from Docker Hub — not vendored or pre-loaded. An offline/restricted-egress
+  build environment would need this image pre-loaded (`kind load docker-image` or equivalent) or
+  a local registry mirror; neither is set up here.
+- **A sibling AgentWatch checkout.** See "AgentWatch checkout and revision" below — the one
+  genuine cross-repo dependency this experiment has, and it is not a Siphonophore package
+  dependency (no `pip install`, no `pyproject.toml` entry — confirmed by inspection: the only
+  AgentWatch modules ever imported, `agentwatch.events` and `agentwatch.groundtruth.k8s_audit`,
+  have an entirely stdlib-only import chain — `json`, `typing`, `dataclasses`, `datetime` — so
+  nothing from AgentWatch's own dependency set needs installing either).
+- **Siphonophore's own existing Python environment** — the top-level `README.md`'s standard
+  `python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"` (this experiment adds no
+  requirement beyond that; `pytest` and the `siphonophore_core`/`siphonophore_harness` packages
+  are all it needs from the venv).
+
+## AgentWatch checkout and revision
+
+`correlate.py` reaches AgentWatch via `sys.path` injection to a sibling checkout, path
+configurable with the `AGENTWATCH_REPO` env var (default `~/dev/agentwatch`) — this is
+deliberately not a Siphonophore dependency (no entry anywhere in `pyproject.toml`) and this
+experiment does not turn it into one; it is a reference to another repository's files on disk, the
+same relationship any external tool consuming AgentWatch's code would have.
+
+Actually verified against AgentWatch commit `92037e9ee926ce817829d34923b914b93c16f152` (branch
+`docs/adapter-currency-caveat`, 2026-08-31), clean working tree. `agentwatch.groundtruth.k8s_audit`
+is a small, self-contained, stdlib-only parser (56 lines of actual logic; its full source is
+reproduced and cited by file:line throughout this README's "Why Metadata-level auditing" section)
+— it is not expected to be revision-sensitive in any way that would break this experiment, but no
+later revision has actually been tested. If AgentWatch's `parse_lines()` contract changes (the
+`GroundTruthEvent(comm, args=(verb, resource_id), success, ...)` shape this experiment depends on
+in `correlate.py`), this experiment's tests would fail loudly (an `AttributeError`/`AssertionError`
+against real data), not silently produce wrong results — no version pin is enforced in code because
+none previously existed in this repo's own convention for cross-repo dev-tool checkouts, and adding
+one (e.g. a git submodule) would be exactly the kind of architectural change this housekeeping pass
+was told not to make.
+
 ## Scope: Stage 1 only
 
 This is the K8s-audit-log leg only. eBPF/kernel observation (Stage 2) is explicitly not attempted
@@ -83,6 +133,10 @@ sibling checkout — no AgentWatch file was ever edited).
    approximated by anything here.
 
 ## Reproducing
+
+Assumes the top-level `README.md`'s standard environment is already set up
+(`python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"` from the repo root) — see
+"Prerequisites" above for everything else (kind, kubectl, Docker, a sibling AgentWatch checkout).
 
 ```
 python3 experiments/k8s_agentwatch_observation/setup_cluster.py   # once, idempotent
