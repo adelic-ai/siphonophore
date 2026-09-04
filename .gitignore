@@ -9,3 +9,4 @@ dist/
 .DS_Store
 spawn_helper/siphonophore-spawn
 research/
+.claude/settings.local.json
