@@ -16,6 +16,7 @@ from siphonophore_harness.broker import Broker
 from siphonophore_harness.intent_parsing import IntentParseError
 from siphonophore_harness.loop import CognitiveLoop
 from siphonophore_harness.model import ScriptedModel
+from siphonophore_harness.outcome import DispatchResult
 
 
 def _make_loop(completions: list[str]) -> CognitiveLoop:
@@ -156,3 +157,21 @@ def test_loop_holding_a_delegated_authority_is_refused_outside_its_scope():
 
     with pytest.raises(GateViolation):
         loop_b.step("try something outside what was delegated")
+
+
+# ---- Stage 2 (docs/REFERENCE_HARNESS_IMPLEMENTATION_PLAN.md): result propagation ---------------
+
+def test_step_propagates_the_enriched_dispatch_result_unchanged():
+    """CognitiveLoop.step() requires no new orchestration logic to benefit from Stage 2 -- it
+    already just returns whatever Broker.dispatch() gives it (loop.py), so widening dispatch()'s
+    return value is enough on its own."""
+    completion = json.dumps({"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})
+    loop = _make_loop([completion])
+
+    result = loop.step("please run something")
+
+    assert isinstance(result, DispatchResult)
+    assert result.decision.permitted is True
+    assert result.decision.execution_class == "same_process"
+    # Compatibility surface every other test in this file already relies on unmodified:
+    assert result.execution_class == "same_process"

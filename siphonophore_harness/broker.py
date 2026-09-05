@@ -20,13 +20,29 @@ Broker entirely -- it's not an Intent, so it was never `dispatch()`'s job. Real 
 orchestration (a second, independently running `CognitiveLoop` actually holding and exercising a
 delegated `Authority`) is separate, still-deferred integration work; this only closes the gap where
 a single caller demonstrating delegation had to bypass Broker to do it.
+
+**Widened return/attach contract (docs/REFERENCE_HARNESS_IMPLEMENTATION_PLAN.md Stage 2):** the
+mediation sequence above is completely unchanged -- `dispatch()` still always mints a Decision via
+`Gate.submit()` before calling `Executor.execute()`, on every path. What changed is only what the
+already-minted `Decision` is used for afterward: on success, `dispatch()` returns a
+`DispatchResult` (outcome.py) composing the `Effect` with a curated `DecisionProjection`, rather
+than the bare `Effect`; on any post-Decision refusal (`GateViolation`, `ExecutionError`, or
+`IdentityError` raised from inside `Executor.execute()`), the identical `DecisionProjection` is
+attached to the raised exception -- as an ordinary attribute, not a new exception type -- before
+it propagates, so the original exception's type, `isinstance`/`except` behavior, and traceback are
+untouched. A refusal raised before any Decision exists (`Gate.submit()` itself, e.g. a forged or
+mismatched `Authority`) is never touched here and carries no `.decision` attribute at all -- no
+placeholder is fabricated for a Decision that never existed.
 """
 from __future__ import annotations
 
 from siphonophore_core.authority import Authority
-from siphonophore_core.execution import Executor
-from siphonophore_core.intent import Effect, Intent
-from siphonophore_core.mediation import Gate
+from siphonophore_core.execution import Executor, ExecutionError
+from siphonophore_core.identity import IdentityError
+from siphonophore_core.intent import Intent
+from siphonophore_core.mediation import Gate, GateViolation
+
+from .outcome import DecisionProjection, DispatchResult
 
 
 class Broker:
@@ -34,6 +50,15 @@ class Broker:
         self._gate = gate
         self._executor = executor
 
-    def dispatch(self, intent: Intent, authority: Authority | None = None) -> Effect:
+    def dispatch(self, intent: Intent, authority: Authority | None = None) -> DispatchResult:
         decision = self._gate.submit(intent, authority=authority)
-        return self._executor.execute(decision, intent)
+        try:
+            effect = self._executor.execute(decision, intent)
+        except (GateViolation, ExecutionError, IdentityError) as exc:
+            # A Decision was already minted above, on every path that reaches this except clause
+            # (Executor.execute() only ever raises after receiving that Decision) -- attach the
+            # same curated projection dispatch() would have returned on success, as a plain
+            # attribute, so the exception's own type/identity/traceback are untouched.
+            exc.decision = DecisionProjection.from_decision(decision)
+            raise
+        return DispatchResult(effect=effect, decision=DecisionProjection.from_decision(decision))

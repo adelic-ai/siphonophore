@@ -25,11 +25,11 @@ Decision, a Gate secret, or an Executor reference could ever reach this class.
 from __future__ import annotations
 
 from siphonophore_core.authority import Authority
-from siphonophore_core.intent import Effect
 
 from .broker import Broker
 from .intent_parsing import parse_intent
 from .model import Model
+from .outcome import DispatchResult
 
 
 class CognitiveLoop:
@@ -41,7 +41,7 @@ class CognitiveLoop:
         self.history: list[dict] = []
         self.last_message: str | None = None
 
-    def step(self, user_message: str) -> Effect:
+    def step(self, user_message: str) -> DispatchResult:
         """One turn: append the user's message, get a completion, parse it into an Intent (plus
         an optional human-facing message, intent_parsing.ParsedTurn), dispatch the Intent through
         the Broker, and feed the resulting Effect back into history as the next turn's context --
@@ -70,5 +70,5 @@ class CognitiveLoop:
         return effect
 
 
-def _describe_effect(effect: Effect) -> str:
+def _describe_effect(effect: DispatchResult) -> str:
     return f"intent {effect.intent_id} executed via {effect.execution_class}: {effect.detail}"
