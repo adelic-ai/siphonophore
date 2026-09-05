@@ -462,8 +462,11 @@ Siphonophore is.
 Linux/local is a first-class substrate and stays one. It is the only substrate where execution
 identity is currently established *independently of the executing process*, which makes it the
 strongest, not the legacy, path. Sandbox/namespace-only and VM substrates are architectural
-direction with no backend behind them; a future substrate should need a new `ExecutionBackend` and
-nothing else.
+direction with no backend behind them; adding a future substrate should not require redefining
+Siphonophore's core substrate-neutral semantics merely to accommodate its own vocabulary or
+mechanics — it may still legitimately require substrate-specific backend configuration, policy
+mapping, deployment components, or evidence/correlation mechanisms of its own, the same way
+Kubernetes needed `pod_name_for()`'s own naming rules and gained no equivalent of a check-in tier.
 
 ### What each layer establishes — and what it does not
 
@@ -616,6 +619,9 @@ redesign mandate; each is a question to answer when a concrete engineering need 
   level, for which resources) is a deployment decision that materially changes what any observer can
   establish. Nothing in Siphonophore requests, requires, or verifies it.
 - **Where the SDK/deployment guarantee boundary is documented canonically.** §10's table is this
-  repository's answer as of this document. A pre-registered study of the deployment half of that split
-  exists on the `explore/k8s-mediation-bypass` branch; it is implemented and **not executed**, and no
-  claim in canonical documentation rests on it.
+  repository's answer as of this document. A pre-registered study of the deployment half of that
+  split exists on the `explore/k8s-mediation-bypass` branch; it has been executed and closed, but
+  that branch's own committed README has not yet been updated to say so (it still reads
+  "IMPLEMENTED, NOT EXECUTED") — a publication gap in that branch's documentation, not an open
+  question about whether the study ran. No specific result from it is asserted in canonical
+  documentation pending that publication.

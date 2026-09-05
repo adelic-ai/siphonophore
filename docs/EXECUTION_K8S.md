@@ -32,9 +32,12 @@ substrate-neutral model this document is one realization of.
   That is a correlation result about executions that happened; it is not a claim about path
   exclusivity, and none is made here.
 - **Mediation-bypass study** — pre-registered and implemented on the `explore/k8s-mediation-bypass`
-  branch, **not executed**. No statement in this document or any other canonical document rests on
-  it. Its subject is the deployment half of `DESIGN.md` §10's split — substrate-authority custody —
-  not a property of this backend.
+  branch. The study has been executed and closed; publication of its final scientific record into
+  that branch's own documentation is a separate, not-yet-done integration task — the branch's
+  committed README still reads "PRE-REGISTERED DESIGN — IMPLEMENTED, NOT EXECUTED," which is stale
+  relative to the study's actual execution status. Its subject is the deployment half of `DESIGN.md`
+  §10's split — substrate-authority custody — not a property of this backend, so no specific result
+  from it is asserted in this or any other canonical document pending that publication.
 - **Managed clusters** — untested. `kind` only.
 
 ## What's proven
@@ -125,20 +128,26 @@ Siphonophore (`DESIGN.md` §10).
 Named explicitly per the design review's instruction not to add these unless implementation
 revealed them as strictly necessary — it didn't:
 
-- **No Kubernetes check-in / identity-binding tier.** `uid_cgroup_checkin` independently confirms
-  execution identity through the kernel (`SO_PEERCRED`) before anything self-reported is trusted;
-  `k8s_pod` has no equivalent. A real k8s "checked-in" tier would need something that plugs into
-  `identity.py`'s `CheckinRegistry.handle_checkin(presented_nonce, peer_uid)` contract with a
-  k8s-appropriate notion of verified peer identity — e.g. verifying a Pod's projected
-  service-account token, or an admission-time attestation. `CheckinRegistry`'s own logic is already
-  portable and needs no change; only a new listener/verifier analogous to
-  `CheckinListener`/`read_peer_uid` (`identity.py:157-228`) would be new code. Not built here.
-- **No pluggable ground-truth-observer interface.** `audit.py`'s `collect_ground_truth()` is
-  hardcoded to a local directory listing; `reconcile()`/`reconcile_path()` themselves take
-  already-produced booleans/content, so nothing prevents a k8s-specific ground-truth source, but
-  no shared "pluggable observer" abstraction exists to plug one into. This slice's own "external"
-  verification is a fresh `kubectl` call made directly in the test, not a reusable observer
-  component.
+- **No Kubernetes check-in / identity-binding tier — open design, not a chosen mechanism.**
+  `uid_cgroup_checkin` independently confirms execution identity through the kernel (`SO_PEERCRED`)
+  before anything self-reported is trusted; `k8s_pod` has no equivalent, and none is built here. The
+  Linux mechanism is prior art, not a template to port: the substrate-neutral question — what
+  execution-identity property should a Kubernetes substrate establish, and by what independent
+  verification — has to be answered before any Kubernetes-specific mechanism is chosen. `identity.py`'s
+  `CheckinRegistry.handle_checkin(presented_nonce, peer_uid)` is one existing, already-portable
+  contract that a future listener could plug into, and a Pod's projected service-account token or an
+  admission-time attestation are candidate k8s-side verification sources — named here as possibilities
+  under consideration, not as a decided design. Nothing in this repository commits Kubernetes to
+  reusing the Linux check-in protocol specifically.
+- **No pluggable ground-truth-observer interface — open design, not a planned addition.** `audit.py`'s
+  `collect_ground_truth()` is hardcoded to a local directory listing; `reconcile()`/`reconcile_path()`
+  themselves take already-produced booleans/content, so nothing in the code prevents a k8s-specific
+  ground-truth source from existing, but no shared "pluggable observer" abstraction exists in core,
+  and building one is not a settled direction. This slice's own "external" verification is a fresh
+  `kubectl` call made directly in the test, not a reusable observer component. Independent observation
+  can strengthen assurance without becoming part of Siphonophore's authorization trust path — that is
+  the invariant (`DESIGN.md` §5); whether it should also gain a shared interface *in* core is a
+  separate, unresolved question this repository does not answer by having built one experimentally.
 - **No AgentWatch integration.** AgentWatch (a sibling project) is explicitly not a Siphonophore
   dependency and stays external — nothing here imports or invokes it. The independent verification
   this slice does is a stand-in for what an AgentWatch-based observer would do from its own

@@ -249,7 +249,9 @@ everything the architecture might eventually support.
   `separate_process`, `uid_cgroup`, `uid_cgroup_checkin`) and Kubernetes (`k8s_pod`, proven against a
   local `kind` cluster only, not part of the default `Policy` mapping, and with no check-in tier —
   see [`docs/EXECUTION_K8S.md`](docs/EXECUTION_K8S.md)). VM and sandbox/namespace-only substrates are
-  not implemented; adding one should require a new `ExecutionBackend` and nothing above the boundary.
+  not implemented; adding one should not require redefining Siphonophore's core semantics, though
+  substrate-specific configuration, policy mapping, deployment integration, or evidence mechanisms
+  may still be needed alongside the new backend.
 - The reference harness works but is not yet pleasant to use: `examples/repl.py` drives a single
   `CognitiveLoop` on the authority-less path, registers only the two portable execution tiers (so
   neither the `uid_cgroup` nor the `k8s_pod` substrate is reachable from it), and surfaces the
