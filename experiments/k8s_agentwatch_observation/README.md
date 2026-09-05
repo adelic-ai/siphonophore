@@ -65,7 +65,11 @@ was told not to make.
 ## Scope: Stage 1 only
 
 This is the K8s-audit-log leg only. eBPF/kernel observation (Stage 2) is explicitly not attempted
-here — see "What Stage 1 does not establish."
+here — see "What Stage 1 does not establish." (Update 2026-09-04: the specific feasibility question
+of whether host-level eBPF observation *can* reach a K8s Pod at all — as opposed to a full Stage 2
+implementation — has since been answered by a separate, later probe; see "Stage 2 precursor" below.
+Stage 1 itself, as documented in this section and its own results, still establishes nothing at the
+kernel level — that has not changed.)
 
 ## Why a second cluster, not `kind-siphonophore-demo`
 
@@ -202,6 +206,9 @@ using its actual, unmodified `k8s_audit.parse_lines()`. All three tests passed.
   strongest positive confirmation of "a real container process ran" in this experiment is
   Siphonophore's own live-state poll (category 1/3-adjacent, self-reported) — a genuinely
   independent, kernel-level confirmation is exactly what eBPF (Stage 2, not attempted) would add.
+  (A separate, later probe — not part of Stage 1's own test suite — has since obtained exactly that
+  kernel-level confirmation for a standalone known process; see "Stage 2 precursor" below. It does
+  not modify or extend Stage 1's own results above, which are unchanged.)
 - **No proof that a K8s audit event implies process execution.** Explicitly, deliberately not
   claimed anywhere in this experiment's code or results.
 - **No stronger DENY claim than what's stated above.** In particular, the CognitiveLoop DENY case's
@@ -248,3 +255,104 @@ convention (including `K8sPodBackend` here) — this experiment did not change o
 the project memory / `/docket` entry: whether request/intent identity, attempted-execution identity,
 and realized concrete-execution identity are actually distinct concepts remains an open question the
 Kubernetes work is expected to inform, not one this work unit resolved.
+
+## Stage 2 precursor: host-level eBPF observation-topology probe (2026-09-04)
+
+**Not Stage 1. Not Stage 2 either — a narrow, prerequisite feasibility probe for Stage 2, run and
+independently analyzed before any Stage 2 implementation.** The question this probe answers: can
+agent-vm's **host** kernel observe a known process executing inside a vanilla `kind` Kubernetes
+workload using AgentWatch's existing eBPF machinery, with enough cgroup/runtime evidence to
+defensibly correlate that observation to the concrete Pod/container — i.e., does Stage 2 need an
+in-cluster eBPF DaemonSet, or is host-level observation empirically sufficient on this environment?
+
+Two separate identities were involved by design, so the interpretation could not simply agree with
+itself: **maude** (privileged) executed the probe against a real `kind` cluster and produced a raw
+evidence archive; **sipho-agent** (restricted, no elevated privilege) independently analyzed that
+archive read-only, against the pinned AgentWatch source, without rerunning the privileged
+experiment and without trusting maude's own interpretation of the result.
+
+- Evidence archive: `/tmp/sipho-topology-probe-evidence.tar.gz`,
+  SHA-256 `78e5687ecd0466c8b436162ea7e122bc21400bfe3ce168f995c6926ae7e35827` (verified independently by
+  sipho-agent; exact match).
+- AgentWatch checkpoint: `92037e9ee926ce817829d34923b914b93c16f152` — the same commit already
+  recorded above under "AgentWatch checkout and revision" for Stage 1; the archived bpftrace program
+  was confirmed byte-for-byte identical to this checkout's live `agentwatch.groundtruth.ebpf.BPFTRACE_PROGRAM`
+  (direct string comparison, not assumed).
+- Siphonophore checkpoint: this branch, at the commit immediately prior to this one (`edd59da`).
+
+**Result: FULL SUCCESS.** All four pre-registered success criteria (defined before the evidence was
+seen) passed:
+
+1. AgentWatch's own unmodified `parse_lines()`, run against the raw bpftrace output, found exactly
+   one EXEC event for the known marker (`sp-mk-725df4ab`), with the marker appearing directly in
+   `exe` (`/tmp/sp-mk-725df4ab`) — pid `87776`, uid `0`, cgroup `189979`.
+2. That event's cgroup identifier resolved, through AgentWatch's own unmodified
+   `demo/k8s/ebpf/pod_lookup.py:pod_uid_from_cgroup_path()` applied to the host cgroup path, to Pod
+   UID `b6a16766-05ee-446a-8ee5-ff96a817f47c` — matching the raw Kubernetes Pod object's
+   `metadata.uid` exactly (Pod `sipho-topo-probe`, container ID
+   `containerd://679f3691f7f1b20198548be43b86f265f9fff9be0ac4c973638f5ee89decbca9`).
+3. An independently collected cgroup inode (`/proc/87776/cgroup` → `stat` of the corresponding
+   `/sys/fs/cgroup` path, collected via a route that does not go through AgentWatch's own inode-walk)
+   agreed exactly with the eBPF event's cgroup identifier: `189979 == 189979`.
+4. Exactly one Kubernetes Pod/container was consistent with the complete evidence — confirmed
+   against `crictl ps`/`crictl pods` (nine other, unrelated containers on the node, none sharing this
+   container ID or Pod UID) and independently corroborated by a second, cgroup-free route: host `ps`
+   ancestry from PID `87776` through the `containerd-shim-runc-v2 -id <sandbox>` parent to the same
+   `crictl pods` sandbox ID.
+
+The correlation does not depend on timing coincidence: the converging identifiers are a 128-bit Pod
+UID and a 64-hex-character container ID, embedded verbatim in independently-collected artifacts
+(cgroup path, raw `pod.json`, `crictl` output), not merely co-occurring timestamps.
+
+**Narrow empirical claim (do not generalize beyond this):** on agent-vm's tested
+`kind`/cgroup-v2/containerd/systemd-cgroup-driver topology, AgentWatch's existing host-level eBPF
+observation can observe a process executing inside a Kubernetes workload and correlate the observed
+cgroup to the concrete Pod/container identity, without requiring an in-cluster observer. This does
+**not** establish: managed-Kubernetes behavior; other cgroup drivers/layouts or container runtimes;
+adversarial-workload robustness; production reliability; that Siphonophore caused the observed
+execution; Siphonophore's authorization correctness; or any DENY/non-execution evidence (this probe
+only tested a permitted execution path, mirroring Stage 1's own ALLOW/DENY evidentiary discipline
+above).
+
+**Architectural consequence (empirical, not a design decision):** for the *minimum* Stage 2
+experiment on agent-vm, an AgentWatch eBPF DaemonSet is not required — host-level observation is
+empirically sufficient on this tested topology. A future bounded measurement helper would minimally
+need `CAP_BPF`/root to load the probe (via the same caller-supplied-elevation shape
+`agentwatch.groundtruth.ebpf_capture.py` already documents) plus host read access to
+`/sys/fs/cgroup` and `/proc/<pid>/cgroup` — no in-cluster component, ServiceAccount token, or
+`kubernetes.default.svc` reachability. **No such helper was designed or built as part of this
+checkpoint;** this is a recorded consequence of the evidence, to inform — not preempt — Stage 2's
+actual design.
+
+**AgentWatch robustness finding (not fixed, by instruction; recorded as a caveat):**
+`pod_lookup.py`'s `pod_uid_from_cgroup_path()` docstring describes the expected cgroup-path shape as
+containerd's systemd driver embedding `kubepods-<qos>-pod<uid>.slice` directly. The actual path
+observed on this `kind` node was `kubelet-kubepods-besteffort-pod<uid>.slice` — an extra `kubelet-`
+prefix segment the docstring does not describe. Resolution still succeeded only because the
+matching regex (`_POD_UID_RE`) is an unanchored `re.search`, which finds `kubepods-besteffort-pod...`
+as a contiguous substring inside the longer real string. This worked here but is fortuitous relative
+to what the code's own documentation claims; a differently-shaped cgroup naming scheme could
+silently return `None` rather than erroring. Left unfixed per this checkpoint's scope (documentation
+only, no AgentWatch changes).
+
+**Failed attempts, preserved (not smoothed over):**
+- *Attempt 1* (`exec /usr/local/bin/<marker> 300`) — fixture failure before any exec: `/usr/local/bin`
+  does not exist in the `busybox:1.36` image used. Independently confirmed: zero marker-related EXEC
+  events anywhere in this attempt's raw bpftrace output.
+- *Attempt 2* (`exec /tmp/<marker> 300`) — produced a **genuine kernel-level EXEC** of the marker
+  (pid `86889`, cgroup `189514`, same marker string in `exe`), immediately followed by container exit
+  127: BusyBox's multi-call binary dispatches its applet by `argv[0]`, and a bare `exec` sets
+  `argv[0]` to the exec'd path itself, which BusyBox did not recognize as a known applet. The raw
+  kernel EXEC evidence for this attempt was independently re-verified from the raw bpftrace output,
+  not merely accepted from the archive's own manifest.
+- *Attempt 3* (`exec -a sleep /tmp/<marker> 300`) — corrected `argv[0]` to a recognized BusyBox
+  applet (`sleep`); supplied the complete, successful correlation evidence summarized above.
+
+**Operational note (not a scientific topology claim):** this checkpoint's own independent analysis —
+archive integrity verification, AgentWatch source inspection, unmodified-parser execution, and the
+full correlation/falsification pass above — was run entirely by a hands-free `sipho-agent` session
+with its own tool-permission prompts bypassed, constrained only by the Linux/VM account boundary
+(no sudo, no elevation available or used), with no intermediate user approvals requested and no
+repository or system changes made. This is recorded as one data point that the "hands-free agent +
+externally constrained OS identity" pattern worked for this specific read-only analysis workload — not
+as a general claim that this pattern is sufficient or safe for arbitrary autonomous workloads.
