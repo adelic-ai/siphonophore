@@ -1,11 +1,27 @@
-# siphonophore — an execution-security SDK, with a reference harness
+# siphonophore — a platform-independent execution-security SDK
 
-An execution-security SDK — and a minimal reference harness built from it — for constraining every
-effect-producing action to pass through a single authority boundary and remain independently
-attributable. Not a framework for building agents faster, and not a general-purpose
-agent-development SDK: the reference harness demonstrates the architecture, it is not what the
-architecture is about. See `HISTORY.md` for how this design was arrived at and what's been learned
-building toward it; this document states only the design itself.
+A platform-independent execution-security substrate — an SDK, with a reference harness built above
+it — for carrying identity, authority, delegation, and execution-relevant provenance across the
+boundary where a requested action becomes real execution, and for keeping what happened there
+independently checkable afterwards. Not a framework for building agents faster, and not a
+general-purpose agent-development SDK: the reference harness is a *consumer* of this architecture,
+not what the architecture is about.
+
+**The core is substrate-neutral by construction.** Concrete execution substrates — Linux/local
+process, UID/cgroup, and Kubernetes today — plug in below a single boundary without redefining what
+`Order`, `Authority`, `Intent`, or `Decision` mean. §10 states that invariant in full and is this
+repository's authoritative statement of it; every other document here defers to it rather than
+restating it.
+
+**The scope of what Siphonophore itself enforces is stated narrowly on purpose.** Within its own
+call path, no effect is produced without a Gate-minted, `Executor`-re-verified `Decision` whose
+bound artifact digest matches the code about to run. Whether that path is the *only* route to a
+given effect is a property of the surrounding deployment — of who holds the substrate credential —
+not a property this SDK can supply alone. §10's "What each layer establishes" table is where that
+line is drawn, and it is load-bearing everywhere below.
+
+See `HISTORY.md` for how this design was arrived at and what's been learned building toward it;
+this document states only the design itself.
 
 ## §0 — Study Strands, don't depend on Strands
 
@@ -39,10 +55,20 @@ Principal → Intent → Mediation (Gate) → Authority decision → Execution i
 ```
 
 The cognitive loop never executes or holds anything directly — no credential, no filesystem path,
-no process handle, no reference to another agent. It emits an Intent. The Gate is the only thing
-that ever produces an effect, and the question it exists to answer is not "how does an agent invoke
-a capability" but **under what independently attributable authority may an intent become a
-real-world effect.**
+no process handle, no reference to another agent. It emits an Intent. The question the Gate exists
+to answer is not "how does an agent invoke a capability" but **under what independently
+attributable authority may an intent become a real-world effect.**
+
+**The precise scope of "every," stated here rather than left to be inferred:** within Siphonophore's
+own call path the Gate is the only thing that produces an effect — `Broker.dispatch()` always mints
+a `Decision` through `Gate.submit()` first, and `Executor.execute()` independently re-verifies that
+`Decision` before any backend runs (`broker.py`, `execution.py`). That is a real, checked property
+of this code, and it is bounded by it: a process that independently holds the substrate credential a
+backend would use can reach the same effect without entering Siphonophore at all. No arrangement of
+this SDK's own code changes that, because such a path never enters this SDK's code. Making a
+deployment's *only* reachable path run through mediation is a credential-custody problem the
+deployment solves, not one the library can — §10 names the split, and §4 is why it has to be named
+rather than assumed.
 
 The protocol carrying an Intent from the cognitive loop to the Gate is a candidate mechanism, not
 the security boundary itself — MCP is attractive because it can structurally force every intent
@@ -55,14 +81,23 @@ Execution class is a per-intent policy decision, never a property of whether the
 happened to name something a "tool" or an "agent":
 
 ```
-intent → policy → required authority/consequence → execution class:
-    same process | separate process | uid+cgroup | container | VM
+intent → policy → required authority/consequence → execution class
+                                                        ↓
+                                          the substrate boundary (§10)
+                                                        ↓
+                              the concrete backend registered for that class
 ```
+
+An execution class names a *requirement*, not a substrate: policy selects it, `Decision` binds it,
+and the substrate boundary resolves it to whichever backend a deployment registered for it. The
+classes that exist today (`same_process`, `separate_process`, `uid_cgroup`, `uid_cgroup_checkin`,
+`k8s_pod`) are a set of available requirement shapes, not rungs on a single weakest-to-strongest
+ladder — see `docs/EXECUTION.md` for the per-dimension treatment and §10 for the boundary itself.
 
 A pure calculation can run in-process. A public network fetch might want a constrained worker. A
 repository write might need uid/cgroup separation. Something touching real credentials might need a
-container or VM plus short-lived credential injection. The determining variable is what the
-specific intent requires, and the depth of isolation the policy grants should be proportional to
+container-shaped substrate plus short-lived credential injection. The determining variable is what
+the specific intent requires, and the depth of isolation the policy grants should be proportional to
 that requirement — not maximal by default and not minimal by default.
 
 Every field a Decision carries that execution dispatch branches on must be cryptographically bound
@@ -150,25 +185,42 @@ SDK and reference harness co-evolve; the SDK is not designed in full before any 
 exercised by running code.
 
 ```
-siphonophore-core/
+siphonophore_core/            the SDK — substrate-neutral throughout (§10)
     identity/      Principal, ExecutionIdentity
     intent/        Intent, Effect
     policy/        Policy, Decision
     authority/     Order, Authority, Scope   (§9)
     mediation/     Gate
     execution/     Executor, ExecutionClass   (§2)
+                   ExecutionBackend — the substrate boundary   (§10)
     audit/         SelfReport, Observation, Reconciliation   (§3)
 
-siphonophore-harness/
+    ── substrate boundary ──────────────────────────────────────────
+    concrete backends below it: Linux/local (uid+cgroup, check-in),
+    Kubernetes (k8s_pod), future substrates. Substrate vocabulary
+    lives here and nowhere above.   (§10)
+
+siphonophore_harness/         the reference harness — a consumer of the SDK, not part of it
     a minimal native cognitive loop (prompt → completion → parse intent → feed back)
     default policy, default executors, default audit wiring, secure defaults
 ```
 
-`siphonophore-core` contains no `Agent`, `Model`, `Prompt`, `Conversation`, LLM provider, or general
-reasoning loop — those live only in `siphonophore-harness`, as the reference implementation, not
+`siphonophore_core` contains no `Agent`, `Model`, `Prompt`, `Conversation`, LLM provider, or general
+reasoning loop — those live only in `siphonophore_harness`, as the reference implementation, not
 the core. A different harness, including one adapting patterns studied from an existing agent SDK
-(never importing one — §0), should be able to sit on `siphonophore-core` without carrying
-`siphonophore-harness`'s specific cognitive loop.
+(never importing one — §0), must be able to sit on `siphonophore_core` without carrying
+`siphonophore_harness`'s specific cognitive loop. That direction is one-way and structural, not a
+convention: nothing in `siphonophore_core` imports `siphonophore_harness`, and an external harness
+consuming `Broker.dispatch()` reaches the identical registered backend the reference harness reaches
+(demonstrated for `k8s_pod` in `tests/test_harness_loop_k8s_cluster.py`, which shares one backend
+*instance* across both call shapes rather than two identically-configured ones).
+
+**The reference harness being a consumer does not make it disposable.** It is where the SDK's
+abstractions get exercised by something with a user in front of it, and its usability is a
+first-class engineering concern of this project (§6's own step 6, "expand the reference/default
+harness") — not scaffolding kept alive only to run tests. What is not negotiable is the direction of
+the dependency: harness concepts never migrate downward into the core to make the harness easier to
+write.
 
 **Required invariants vs. customizable mechanisms.** Customizable without losing Siphonophore
 conformance: the cognitive loop itself, the policy engine, the executor/substrate backend, the
@@ -193,6 +245,13 @@ minimal cognitive loop → typed Intent → Gate
 
 The proof required: **the cognitive loop must be structurally unable to produce that effect except
 through the Gate.**
+
+Read that at its actual scope, which §10 states in general: it is a property of the reference
+harness's `CognitiveLoop` — enforced by static analysis in `test_harness_structural_proof.py`, which
+checks that the loop and its neighbours import no effect-producing stdlib module and that
+`CognitiveLoop.__init__` accepts nothing beyond `model`, `broker`, `principal_id`, `authority`. It is
+a real structural property of that class, not a claim about arbitrary code running in the same
+process, which no library can make.
 
 An earlier version of this section additionally required that delegation be demonstrated "reducing
 to the exact same primitive a tool call does, not a separately-mediated mechanism." That framing was
@@ -319,14 +378,143 @@ could be used to submit on a different principal's behalf); `intent.kind` must b
 nothing minted); the third folds into `permitted` alongside the ordinary policy result — a real,
 signed, auditable "no," the same shape any other policy denial already takes.
 
+## §10 — Platform independence: a substrate-neutral core, one boundary where substrates plug in
+
+This section is the authoritative statement of the invariant the rest of this repository defers to.
+It exists because the failure mode it guards against is quiet: a concrete substrate is added, its
+native vocabulary is convenient, and within a few commits the general architecture has silently
+become that substrate's architecture.
+
+```
+        reference harness              external harnesses
+                    \                   /
+                     \                 /
+                 Siphonophore SDK / core        ← substrate-neutral, always
+                             |
+                  ── execution substrate boundary ──        (ExecutionBackend)
+                             |
+              +--------------+---------------+
+              |                              |
+        Linux / local                   Kubernetes
+   same_process, separate_process,        k8s_pod
+   uid_cgroup, uid_cgroup_checkin            |
+                                     future substrates
+```
+
+### The invariant
+
+**Core concepts do not acquire substrate vocabulary.** `Order`, `Authority`, `Scope`, `Intent`,
+`Effect`, `Policy`, `Decision`, `Gate`, and `Executor` mean exactly the same thing regardless of what
+executes below them. Adding a substrate must require no change to any of them.
+
+This is checked, not asserted. `tests/test_core_no_k8s_vocabulary.py` scans every module in
+`siphonophore_core` except the one backend allowed to know what a Pod is, in two layers: a
+prose/reference scan for `Pod`/`Job`/`Namespace`/`ServiceAccount` as standalone capitalized words and
+for `Kubernetes`/`kubectl`/`k8s` case-insensitively, plus an AST scan of dataclass field names and
+function parameter names against a Kubernetes-noun list — the second layer specifically because a
+lowercase `namespace: str` field added to a core dataclass is the realistic leak shape and the regex
+alone would pass it silently. A new substrate should extend the same discipline rather than opt out
+of it.
+
+### The substrate boundary
+
+`ExecutionBackend` (`execution.py`) *is* the boundary. Above it: authorization, decision minting,
+independent re-verification, artifact binding, execution-class selection. Below it: whatever it
+actually takes to make the effect happen on one concrete substrate.
+
+`Executor.execute()` performs, in order, decision↔intent correspondence, `gate.verify()`,
+`decision.permitted`, and the artifact-digest comparison — **and only then** looks up a backend.
+Backends are handed an already-verified `Decision`; they do not re-authorize, and are not the layer
+that could. No backend in this repository reads more than one field off the `Decision` it is given:
+the four substrate-identity backends and `K8sPodBackend` read `decision.intent_id` (their execution
+correlation identity) and nothing else, and the two portable backends read no `Decision` field at
+all. That factoring is correct and deliberate, and it has
+a consequence worth stating plainly rather than discovering later: **a backend invoked directly,
+outside `Executor`, will act on any `Decision`-shaped object it is handed**, because checking is not
+its job. Authorization belongs above the execution substrate (the same principle
+`contracts/spawn_helper.md`'s `SH-23` states for the privileged helper), and what keeps a caller on
+the authorized path is the deployment's credential custody, not the backend's own scepticism.
+
+### Substrate vocabulary stays below the boundary
+
+`Pod`, `Job`, `Namespace`, `ServiceAccount`, `kubeconfig`, `kubectl` are Kubernetes implementation
+concepts. They are not Siphonophore primitives, and they do not become primitives by being useful.
+Promoting a substrate-specific object into a core concept requires two things, both of them
+demonstrated rather than anticipated: a genuinely substrate-neutral formulation, and a concrete need
+from more than one substrate that the current core cannot express. Absent that, the concept stays in
+its backend, exactly as `pod_name_for()`'s RFC 1123 name derivation and `uid_cgroup`'s own
+`_EXECUTION_ID_RE` charset check both do today — each backend owning its substrate's naming rules is
+the existing pattern, not an exception to one.
+
+The distinction to keep: **the Kubernetes implementation is genuinely Kubernetes-native; Siphonophore
+itself remains Kubernetes-independent.** A new engineer should be able to read this repository and
+conclude that Kubernetes is a supported and important concrete substrate, and that it is not what
+Siphonophore is.
+
+### Substrates that exist today
+
+| Substrate | Execution classes | Backends | Status |
+|---|---|---|---|
+| Linux / local process | `same_process`, `separate_process` | `SameProcessBackend`, `SeparateProcessBackend` | portable; refuse to run under a root broker unless `allow_root=True` |
+| Linux / OS execution identity | `uid_cgroup`, `uid_cgroup_checkin` | `UidCgroupBackend`, `SpawnHelperBackend`, `CheckedInUidCgroupBackend`, `CheckedInSpawnHelperBackend` | real ephemeral UID + cgroup v2 leaf; `*_checkin` adds kernel-verified (`SO_PEERCRED`) check-in |
+| Kubernetes | `k8s_pod` | `K8sPodBackend` | real Pod per execution, proven against `kind`; not in the default `Policy` mapping; no check-in tier |
+
+Linux/local is a first-class substrate and stays one. It is the only substrate where execution
+identity is currently established *independently of the executing process*, which makes it the
+strongest, not the legacy, path. Sandbox/namespace-only and VM substrates are architectural
+direction with no backend behind them; a future substrate should need a new `ExecutionBackend` and
+nothing else.
+
+### What each layer establishes — and what it does not
+
+Verification, observation, correlation, and attribution are four different things, and a claim that
+does not name the layer supporting it is not yet a claim. This table is the reference for the rest of
+the documentation.
+
+| Property | Established by | Explicitly not established |
+|---|---|---|
+| **Authorization semantics** — whether this intent, under this authority, is permitted, and under which execution class | `Gate.submit()` (§9) and `Policy`; bound into `Decision`'s HMAC | that the caller had no other way to reach the effect |
+| **Internal mediation enforcement** — no `Effect` from Siphonophore's own path without a verified, permitted, artifact-bound `Decision` | `Broker.dispatch()` → `Gate` → `Executor.execute()` re-verification | anything about a caller who never calls `Broker.dispatch()` |
+| **Substrate-authority custody** — who can reach the substrate at all | the surrounding deployment: OS identities, credential placement, RBAC, sudoers | nothing in this SDK; backends consume whatever ambient authority their process already holds |
+| **Execution identity** — which OS-level identity actually ran | `uid_cgroup_checkin`'s kernel-verified (`SO_PEERCRED`) check-in, established independently of the executing process | the same independence for any class without check-in: plain `uid_cgroup` provisions an identical real UID and cgroup but reads that identity from `/proc`, in the process asserting the rest of the chain; `k8s_pod` has no check-in tier at all |
+| **Independent observation** — that some external vantage saw the execution | an observer outside the trust domain (§5), on its own evidence | that Siphonophore caused it, or that no other path existed |
+| **Correlation** — that separately-produced records concern the same execution | shared identifiers, joined above both channels (§3) | that agreement between channels implies either one is complete |
+| **Attribution** — which principal an effect is ascribed to | reconciliation (§3) over the above, never stronger than the execution identity policy actually provisioned | agent-granular attribution where no distinct execution identity was provisioned |
+
+Three consequences follow, and none of them is a hedge:
+
+- **Independent observation is not mediation.** An observer establishing that an execution happened,
+  and that its records agree across vantages, says nothing about whether it *had* to go through
+  Siphonophore. Correlation is not causation here in the plain, literal sense.
+- **No finite experiment establishes universal non-bypassability or causal necessity.** An experiment
+  enumerates paths; it cannot quantify over all of them. Documentation in this repository states
+  what was reached over an enumerated set of paths in a named topology, and stops there.
+- **ALLOW evidence and DENY evidence are not symmetric.** A permitted execution leaves a concrete
+  object to point at from several vantages. A refusal leaves an absence, and an absence is bounded by
+  the window, scope, and identifier the observer had available — sometimes there is no surviving
+  correlation identifier at all, because the refusal happened before one existed. Say which of the
+  two is being reported.
+
+### Where this invariant is enforced, and where it merely holds
+
+Checked by tests: core vocabulary neutrality (`test_core_no_k8s_vocabulary.py`), the reference
+harness's structural inability to reach an effect except through `Broker`
+(`test_harness_structural_proof.py`), and both call shapes reaching one shared backend instance
+(`test_harness_loop_k8s_cluster.py`). Held by discipline, not by a test: that a future substrate does
+not quietly widen a core concept to fit its own vocabulary. That is what this section is for.
+
+The corresponding project-level statement — what is actively being built, and what is deliberately
+not being reopened — lives in `README.md`'s "Project status and current direction", which is the
+single canonical answer to "what is this project working on now."
+
 ## Explicitly open, not yet resolved
 
-Not everything below is a near-term roadmap item. Some of these questions turned out, on inspection,
-to require a more general and rigorous treatment than a single implementation like this one should
-try to absorb — closing them well means answering questions about authority-to-execution binding
-broader than what this specific vertical slice was built to demonstrate. This project remains a
-concrete, working experimental system; the items below are named honestly as open, not as signs the
-system is unfinished or being set aside.
+Not everything below is a near-term roadmap item. Some of these questions are broader than this
+project's own engineering scope, and are deliberately left open here rather than answered by
+enlarging Siphonophore to reach them — a general treatment of authority-to-execution binding is not
+what this SDK is for. The items below are named honestly as open, not as signs the system is
+unfinished or being set aside. Where one of them would actually block the current engineering
+direction, it is called out as such; the rest are docketed.
 
 - The gate↔cognitive-loop protocol (MCP-native vs. something narrower) — §1 names it as a
   candidate, not a decision.
@@ -394,3 +582,40 @@ system is unfinished or being set aside.
   the helper cannot establish that the broker's own request was ever authorized by a real
   `Gate.submit()` call in the first place — see `contracts/spawn_helper.md`'s `SH-23` section for
   the precise statement of what the helper does and does not prove.
+
+### Left open by the Kubernetes substrate work specifically
+
+Named here because §10 makes them visible, not because this document resolves any of them. None is a
+redesign mandate; each is a question to answer when a concrete engineering need forces it.
+
+- **`intent_id` as execution correlation identity.** Every backend in this repository uses
+  `decision.intent_id` as its execution_id, by convention — there is no dedicated `execution_id`
+  concept, and none of the substrate work introduced one. This is workable for the sequential,
+  single-requester shapes built so far, and `k8s_pod` already has to *derive* a substrate-legal name
+  from it (`pod_name_for()`) rather than use it directly. Whether request identity, attempted-execution
+  identity, and realized-execution identity are genuinely three concepts is the open question; it
+  becomes load-bearing if concurrent requesters ever share one mediating process, and not before.
+- **Workload-side substrate credentials.** `K8sPodBackend` sets no `serviceAccountName`, so a mediated
+  Pod runs under its namespace's `default` ServiceAccount with a projected token automounted by the
+  cluster's own defaults. This is a precise Kubernetes engineering consideration — described in
+  `docs/EXECUTION_K8S.md`, where it belongs — and deliberately not generalized into a core concept:
+  "what credential the executed workload itself holds" is the Credentials dimension `docs/EXECUTION.md`
+  already names as unbuilt, and Siphonophore ties no credential delivery to an authorized execution
+  today on any substrate. Whether `automountServiceAccountToken: false` should be a backend default,
+  a deployment decision, or a policy-visible field is not decided here.
+- **Stronger DENY / non-execution evidence.** A refusal produces an absence, and the observation work
+  could only bound absences by window, namespace, and naming convention — in one shape, with no
+  surviving identifier at all, because the intent_id was lost when the violation propagated before an
+  `Effect` existed. Whether a refusal can be given a durable, correlatable artifact of its own, without
+  making the refusal path itself effect-producing, is open.
+- **Distinct substrate principals for mediation versus observation.** Whether a mediating identity and
+  an observing identity must be separate substrate principals — rather than one identity conveniently
+  doing both — is a real question about what an observation can be said to establish (§5, §10). It is
+  a study design question, not an SDK change.
+- **Audit coverage.** Substrate-level audit configuration (what the control plane records, at what
+  level, for which resources) is a deployment decision that materially changes what any observer can
+  establish. Nothing in Siphonophore requests, requires, or verifies it.
+- **Where the SDK/deployment guarantee boundary is documented canonically.** §10's table is this
+  repository's answer as of this document. A pre-registered study of the deployment half of that split
+  exists on the `explore/k8s-mediation-bypass` branch; it is implemented and **not executed**, and no
+  claim in canonical documentation rests on it.
