@@ -149,6 +149,25 @@ self-report lies about what it did reconciles as `contradiction`/`unreported_act
 test in the same file drives the identical composition with two real, independently running
 `CognitiveLoop` instances instead of a single test actor.
 
+### Experiments
+
+`experiments/` holds work that produced real evidence but is deliberately outside the core: not a
+product feature, not imported by any shipped code, and not a dependency edge.
+
+- **[`experiments/k8s_agentwatch_observation/`](experiments/k8s_agentwatch_observation/README.md)** —
+  an experiment asking whether a Siphonophore-mediated Kubernetes execution can be independently
+  observed from outside Siphonophore's own trust domain. Two independent evidence channels were
+  used: the Kubernetes API server's own audit log, and host-level eBPF process observation — both
+  through the existing, unmodified tooling of AgentWatch, a separate project that stays outside
+  Siphonophore's trust domain and is not a Siphonophore component or dependency. In the one tested
+  topology (`kind`, cgroup v2, containerd, systemd cgroup driver) those independent observations
+  correlated to the same concrete Siphonophore-mediated Pod/container. **This is a correlation
+  result, not a causal one** — it does not establish that Siphonophore caused the observed
+  execution, does not establish non-bypassability or general execution verification, is not
+  managed-Kubernetes validation, and says nothing about other container runtimes or cgroup layouts.
+  Methods, the evidence categories kept separate throughout, the full limitations, and the results
+  are in that directory's README.
+
 ### Research status
 
 Active development of Siphonophore is currently paused. Building this implementation surfaced a
@@ -168,7 +187,10 @@ gaps in a paused implementation, not an active roadmap.
   instances are proven to compose correctly. There is no *orchestration* layer yet — nothing decides
   when to delegate, spins up a second agent, or picks its model in a live deployment; today that's
   done by hand (test code, or `examples/repl.py` if extended).
-- Container and VM execution substrates are not implemented.
+- VM and sandbox/namespace-only execution substrates are not implemented. A first *container*
+  substrate does exist — the `k8s_pod` Kubernetes backend, proven against a local `kind` cluster
+  only and not part of the default `Policy` mapping; see
+  [`docs/EXECUTION_K8S.md`](docs/EXECUTION_K8S.md).
 - Platform integrity/attestation is not implemented (see `DESIGN.md` §8). Production credential
   delivery is also not implemented — SPIFFE/SPIRE and JWT+Vault were both considered and neither was
   committed to. See [`docs/EXECUTION.md`](docs/EXECUTION.md).
@@ -320,6 +342,9 @@ here decides when to spin one up or supplies its model. That's still separate, l
   open questions.
 - **`HISTORY.md`** — experiments, failures, corrections, and the reasoning by which the current
   architecture was reached.
+- **[`experiments/k8s_agentwatch_observation/README.md`](experiments/k8s_agentwatch_observation/README.md)**
+  — the full record of the Kubernetes execution-observation experiment summarized under
+  **Experiments** above: methods, evidence categories, results, and limitations.
 - **`contracts/`** — pinned contracts for narrow security-critical boundaries whose implementations
   remain subordinate to the contract.
 

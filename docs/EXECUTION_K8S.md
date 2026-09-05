@@ -1,8 +1,7 @@
 # Kubernetes as an execution substrate (experimental)
 
-Status: built and tested on `explore/k8s-substrate-demo`, not yet merged to `main`. This documents
-what the `k8s_pod` execution class actually proves today, what it deliberately does not attempt,
-and what a follow-on would need to add.
+Status: merged to `main`. This documents what the `k8s_pod` execution class actually proves today,
+what it deliberately does not attempt, and what a follow-on would need to add.
 
 This slice went through one round of adversarial review before being treated as a checkpoint —
 four real findings, all fixed here, not just noted: (1) an earlier test suite claimed "both direct
@@ -80,8 +79,12 @@ revealed them as strictly necessary — it didn't:
 - **No AgentWatch integration.** AgentWatch (a sibling project) is explicitly not a Siphonophore
   dependency and stays external — nothing here imports or invokes it. The independent verification
   this slice does is a stand-in for what an AgentWatch-based observer would do from its own
-  audit-log/eBPF vantage; wiring AgentWatch itself in as an actual second observer is real,
-  unstarted follow-on work.
+  audit-log/eBPF vantage. Using AgentWatch itself as an actual second observer has since been
+  done — as a separate, out-of-tree experiment that changed neither this backend nor AgentWatch,
+  and that deliberately did not make AgentWatch a dependency; see
+  [`../experiments/k8s_agentwatch_observation/README.md`](../experiments/k8s_agentwatch_observation/README.md).
+  Nothing in this slice imports or invokes AgentWatch, and no authorization decision anywhere
+  depends on an AgentWatch observation.
 - **No managed-cloud cluster.** Proven against `kind` only. The same architecture is expected to
   survive a real managed cluster (EKS/AKS) unchanged at the `ExecutionBackend` boundary, but that's
   an expectation, not something this slice tested.

@@ -52,7 +52,7 @@ UID or cgroup, used for low-consequence work. Both refuse outright if the broker
 euid 0, unless a caller explicitly opts in (`allow_root=True`) — a deliberate guard against a
 low-consequence intent silently inheriting a root broker's full privilege.
 
-## Kubernetes: a first container-substrate backend (experimental, `explore/k8s-substrate-demo`)
+## Kubernetes: a first container-substrate backend (experimental)
 
 `K8sPodBackend` (`siphonophore_core/execution_k8s.py`, execution class `k8s_pod`) runs
 `intent.artifact_code` as a real Pod on a real cluster (proven against `kind`; the same shape is
