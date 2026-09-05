@@ -1,5 +1,35 @@
 # Execution requirements
 
+Substrate-neutral by design: nothing in this document is specific to one execution substrate. The
+Kubernetes realization of the model described here lives in [`EXECUTION_K8S.md`](EXECUTION_K8S.md);
+Linux/local realizations are described inline below because they are what the core repository ships
+by default, not because the model is Linux-shaped.
+
+## The path an execution takes
+
+```
+request / intent            an attempted exercise of authority (never its source)
+        ↓
+authority / decision        Gate re-verifies the Authority, Policy evaluates, a Decision is minted
+  / mediation               with kind, execution class, and artifact digest bound into it
+        ↓
+executor / substrate        Executor independently re-verifies the Decision and artifact, then
+  selection                 resolves the bound execution class to a registered backend
+        ↓
+── substrate boundary ──    ExecutionBackend (DESIGN.md §10)
+        ↓
+concrete backend            whatever it actually takes on one substrate -- examples, one per
+                            substrate: a process, a UID and cgroup, a Kubernetes Pod
+        ↓
+effect                      plus whatever evidence that substrate makes available
+```
+
+Every stage above the boundary is the same regardless of what executes below it. That is the
+invariant, and `DESIGN.md` §10 is its authoritative statement — including the precise limits of what
+"mediation" establishes and what the surrounding deployment has to supply instead.
+
+## Execution requirements are dimensions, not a ladder
+
 Siphonophore treats execution requirements as a set of independent dimensions, not a single
 weakest-to-strongest ladder every agent or action climbs:
 
@@ -29,7 +59,8 @@ what was actually authorized, with no exceptions.
 
 ## What's implemented today
 
-Two dimensions are exercised for real on Linux, via `siphonophore_core`'s execution backends:
+Two of the dimensions above are exercised for real, on the Linux/local substrate, via
+`siphonophore_core`'s execution backends:
 
 - **UID/GID** — the `uid_cgroup` and `uid_cgroup_checkin` execution classes provision a genuine,
   ephemeral system user per execution (`provision_ephemeral_user()`/`release_ephemeral_user()`),
@@ -47,32 +78,64 @@ them.
 (`SO_PEERCRED`) before anything it did is trusted — see [`EVIDENCE.md`](EVIDENCE.md) for how that
 evidence is reconciled.
 
-`same_process` and `separate_process` are also implemented, as the two weakest tiers — no distinct
-UID or cgroup, used for low-consequence work. Both refuse outright if the broker process itself is
+`same_process` and `separate_process` are also implemented, as the two classes that provision no
+distinct execution identity at all — no distinct UID or cgroup, used for low-consequence work. Both refuse outright if the broker process itself is
 euid 0, unless a caller explicitly opts in (`allow_root=True`) — a deliberate guard against a
 low-consequence intent silently inheriting a root broker's full privilege.
 
-## Kubernetes: a first container-substrate backend (experimental)
+## The substrate boundary, and the substrates behind it
 
-`K8sPodBackend` (`siphonophore_core/execution_k8s.py`, execution class `k8s_pod`) runs
-`intent.artifact_code` as a real Pod on a real cluster (proven against `kind`; the same shape is
-expected, not yet proven, against a managed cluster). It is exactly the extension point this file
-described before it existed: a new `ExecutionBackend`, registered under its own execution class,
-touching nothing in `execution.py`/`mediation.py`/`policy.py`/`Broker`/`CognitiveLoop`. Full detail,
-including what it deliberately does not attempt: [`EXECUTION_K8S.md`](EXECUTION_K8S.md).
+`ExecutionBackend` is the boundary (`DESIGN.md` §10). A substrate is added by implementing it and
+registering the implementation under an execution class — not by teaching anything above the
+boundary about that substrate.
 
-This confirms, not merely asserts, that adding a substrate requires no change to what `Order`,
-`Authority`, `Intent`, or `Decision` mean — `tests/test_core_no_k8s_vocabulary.py` scans every other
-file in `siphonophore_core` for Kubernetes-specific vocabulary (`Pod`, `Job`, `Namespace`,
-`ServiceAccount`, `Kubernetes`, `kubectl`, `k8s`) and fails if any leaks in.
+| Substrate | Execution classes | What it establishes |
+|---|---|---|
+| Linux / local | `same_process`, `separate_process` | real process separation at most; no distinct execution identity |
+| Linux / OS identity | `uid_cgroup`, `uid_cgroup_checkin` | a real ephemeral UID and cgroup v2 leaf per execution; `uid_cgroup_checkin` additionally establishes that identity *through the kernel*, independently of the executing process |
+| Kubernetes | `k8s_pod` | a real Pod per execution, correlatable after the fact by label; no check-in tier, so no independently-established execution identity |
+
+Linux/local is a first-class substrate, not a fallback: it is currently the only one where execution
+identity is established independently of the process claiming it. Kubernetes is a first-class
+substrate too, and the one that confirmed the boundary holds for a second, differently-shaped
+substrate — its full realization, tested scope, and limitations are in
+[`EXECUTION_K8S.md`](EXECUTION_K8S.md), which is where substrate vocabulary belongs.
+
+That confirmation is checked rather than asserted: `tests/test_core_no_k8s_vocabulary.py` scans every
+module in `siphonophore_core` except the one backend allowed to know its own substrate's vocabulary,
+and fails if substrate-specific nouns leak upward — see `DESIGN.md` §10 for the two layers it uses
+and why both are needed.
+
+## What a backend does, and does not, check
+
+`Executor.execute()` verifies decision↔intent correspondence, the `Decision`'s HMAC, its
+`permitted` flag, and the artifact digest, in that order, **before** any backend is looked up. A
+backend receives an already-verified `Decision` and re-checks none of it. No backend here reads more
+than one field from it: the substrate-identity backends and `K8sPodBackend` read `decision.intent_id`
+as their execution correlation identity, and `same_process`/`separate_process` read no `Decision`
+field at all.
+
+Two consequences, both deliberate:
+
+- **Decision authenticity is an `Executor`/`Gate` property, never a per-backend one.** Do not read
+  any backend's behaviour as independent authorization; there is exactly one layer that authenticates
+  a `Decision`, and it is above the boundary.
+- **Backends consume ambient substrate authority.** No backend in this repository holds a credential
+  of its own; each acts with whatever authority its calling process already has. That is the
+  Credentials dimension below, unbuilt, seen from the other side — and it is why substrate-authority
+  custody is a deployment property rather than an SDK one (`DESIGN.md` §10).
+
+`decision.intent_id` doubling as execution correlation identity is a convention, not a designed
+`execution_id` concept. `DESIGN.md`'s open questions record it as open; nothing here depends on it
+being resolved.
 
 ## What's architectural direction only, not built
 
 - **Sandbox/namespace, VM** — no execution backend for either exists. The architecture doesn't make
   any particular substrate part of the authority model, so adding one is intended to require no
-  change to what `Order`, `Authority`, `Intent`, or `Decision` mean — Kubernetes (above) is the first
-  substrate to actually confirm that for a container-shaped backend; VM and namespace/sandbox-only
-  tiers remain unbuilt and untested.
+  change to what `Order`, `Authority`, `Intent`, or `Decision` mean — the Kubernetes substrate is the
+  first to actually confirm that for a second, differently-shaped backend; VM and namespace/sandbox-only
+  substrates remain unbuilt and untested.
 - **Credentials** — a related, deliberately separate question from execution identity: what machine
   identity or credentials a specific authorized execution needs to act on anything beyond the local
   host (an API call, a cloud resource, a downstream service). Candidate mechanisms were considered —
@@ -82,11 +145,15 @@ file in `siphonophore_core` for Kubernetes-specific vocabulary (`Pod`, `Job`, `N
   already happens to hold.
 - **Filesystem policy, network policy, resource limits** — named as real dimensions this model
   should eventually constrain per-execution, not currently enforced by any Siphonophore component
-  beyond whatever the chosen substrate (e.g., a future container backend) would provide natively.
+  beyond whatever the chosen substrate would provide natively. A substrate offering such a control
+  natively does not make it a Siphonophore guarantee until something above the boundary selects it
+  and binds it into the `Decision`.
 
 ## Platform integrity is a separate, lower layer
 
-Everything above establishes *which process, on this host, did this* on a given occasion. It says
-nothing about whether the host itself, or the kernel doing the verifying, is trustworthy — a
-different question, at a different granularity, that this project does not attempt to solve. See
-`DESIGN.md` §8.
+At its strongest — the `uid_cgroup_checkin` class on the Linux/local substrate — everything above
+establishes *which process, on this host, did this* on a given occasion. It says nothing about
+whether the host itself, or the kernel doing the verifying, is trustworthy — a different question,
+at a different granularity, that this project does not attempt to solve. See `DESIGN.md` §8. A
+substrate with no check-in tier establishes correspondingly less, and `DESIGN.md` §10's table is
+where each layer's actual reach is stated rather than assumed uniform.

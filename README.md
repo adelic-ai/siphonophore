@@ -1,13 +1,42 @@
 # siphonophore
 
-**Mediated, attributable execution for agent systems.**
+**A platform-independent execution-security substrate for agent systems.**
 
-Siphonophore is an experimental execution-security SDK, with a reference harness demonstrating how
-delegated authority, execution requirements, and machine effects can remain independently checkable
-across agent execution boundaries.
+Siphonophore is an experimental execution-security SDK. It mediates requested execution while
+carrying identity, authority, delegation, and execution-relevant provenance across the boundary where
+a requested action becomes real execution — and keeps what happened there independently checkable
+afterwards.
 
 It separates the authority to perform an action from the execution requirements under which that
 action may run, and cryptographically binds both into the decision consumed by the execution layer.
+
+**The core is substrate-neutral.** Concrete execution substrates plug in below a single boundary
+without changing what `Order`, `Authority`, `Intent`, or `Decision` mean:
+
+```
+        reference harness              external harnesses
+                    \                   /
+                     \                 /
+                 Siphonophore SDK / core        ← substrate-neutral
+                             |
+                  ── execution substrate boundary ──
+                             |
+              +--------------+---------------+
+              |                              |
+        Linux / local                   Kubernetes
+   uid+cgroup, kernel check-in            k8s_pod
+                                             |
+                                     future substrates
+```
+
+Both current substrates are first-class. Kubernetes matters here as the second, differently-shaped
+substrate that confirmed the boundary actually holds — **the Kubernetes implementation is genuinely
+Kubernetes-native; Siphonophore itself remains Kubernetes-independent.** Siphonophore is not a
+Kubernetes security tool.
+
+The reference harness (`siphonophore_harness/`, `examples/repl.py`) is a *consumer* of the SDK, not
+the SDK. An external harness can use the same core without it. Siphonophore is not that harness, and
+it is not an agent-development framework.
 
 ## Why this exists
 
@@ -31,7 +60,7 @@ after the fact.
 Full argument, and the historical progression from a Strands-specific fix to this general
 architecture: **[`docs/WHY.md`](docs/WHY.md)**.
 
-## Current state — August 2026
+## Current state — September 2026
 
 **Siphonophore demonstrates its core authority-to-execution properties composing together in one
 real, Linux-backed test path** — not merely as separately-validated primitives, and not as a single
@@ -74,8 +103,10 @@ own root `Authority`, the other holding an `Authority` delegated from the first,
 own model-generated intent. What doesn't exist yet is an *orchestration* component: something that
 decides when to delegate, constructs the second loop, and supplies its own model, in a live
 deployment rather than a test.
-That's harness/product capability, not a missing piece of the security architecture — the thesis is
-demonstrated without it.
+That is harness capability rather than a missing piece of the security architecture — the thesis is
+demonstrated without it — which makes it deferred, not unimportant: the reference harness is a
+consumer of the SDK, and improving it is part of this project (see **Project status and current
+direction**).
 
 Today, Siphonophore demonstrates:
 
@@ -102,11 +133,22 @@ Today, Siphonophore demonstrates:
   process asserting the rest of the chain — a genuine kernel fact, but not independently
   cross-checked by anything else.
 
-- **Execution requirements bound to authorization** — policy currently selects among `same_process`,
-  `separate_process`, `uid_cgroup`, and `uid_cgroup_checkin`. The selected execution class is
-  cryptographically bound into the resulting `Decision`, preventing an authorized execution
+- **Execution requirements bound to authorization** — the default policy selects among
+  `same_process`, `separate_process`, `uid_cgroup`, and `uid_cgroup_checkin`. The selected execution
+  class is cryptographically bound into the resulting `Decision`, preventing an authorized execution
   requirement from being silently substituted after authorization. Full model:
   [`docs/EXECUTION.md`](docs/EXECUTION.md).
+
+- **A working substrate boundary, confirmed by a second substrate** — `k8s_pod` (`K8sPodBackend`)
+  runs an authorized artifact as a real Pod on a real cluster, registered like any other backend and
+  reached identically by the reference harness and by direct `Broker.dispatch()` — the same shared
+  backend instance, demonstrated rather than assumed. Adding it required no change to `Order`,
+  `Authority`, `Intent`, `Decision`, `Gate`, `Executor`, `Broker`, or `CognitiveLoop`, and a portable
+  test fails if Kubernetes vocabulary leaks above the boundary. **Backends do not authorize** — no
+  backend here reads more than one field off the `Decision` it is handed (`intent_id`, its execution
+  correlation identity) and none re-checks any of it, because `Executor` has already verified all of
+  it before a backend is looked up.
+  Substrate detail and limits: [`docs/EXECUTION_K8S.md`](docs/EXECUTION_K8S.md).
 
 - **Negative enforcement** — tests exercise fabricated and spliced authority, scope expansion,
   principal impersonation, artifact substitution, forged or modified Decisions, replay attempts, and
@@ -168,18 +210,34 @@ product feature, not imported by any shipped code, and not a dependency edge.
   Methods, the evidence categories kept separate throughout, the full limitations, and the results
   are in that directory's README.
 
-### Research status
+### Project status and current direction
 
-Active development of Siphonophore is currently paused. Building this implementation surfaced a
-broader question — how delegated authority, execution binding, and independently verifiable
-evidence compose in general — that turned out to be more general and abstract than this project's
-own architecture should try to absorb. That question is now being investigated separately, in a
-private research project, rather than by adding more mechanisms here.
+**This is the canonical answer to "what is this project working on now."** It exists so that work
+here follows the project's engineering direction rather than whichever artifact happens to be
+newest. Active, in priority order:
 
-This doesn't make Siphonophore finished, complete, or superseded. It remains the concrete
-experimental implementation where these questions first became operational and testable — including
-the limitations documented below and in `DESIGN.md`. Read the list below as exactly that: documented
-gaps in a paused implementation, not an active roadmap.
+1. **Preserve the platform-independent core.** Substrate-neutral concepts, one substrate boundary,
+   no substrate vocabulary above it (`DESIGN.md` §10, enforced by
+   `tests/test_core_no_k8s_vocabulary.py`).
+2. **Finish and harden Kubernetes as one real, native execution substrate** — without Siphonophore
+   becoming a Kubernetes application or a Kubernetes-specific security tool.
+3. **Keep Linux/local first-class.** It is currently the *only* substrate that establishes execution
+   identity independently of the executing process; it is not a legacy path.
+4. **Improve the reference harness UX** from research-fixture quality toward something practical to
+   use daily. A usable reference harness is part of this project, distinct from the SDK it consumes.
+5. **Make execution verification, correlation, and attribution more rigorous** — and explicit about
+   which layer and which evidence source supports each claim (`DESIGN.md` §10's table).
+6. **Integrate the concrete engineering lessons** from the completed Kubernetes experimental arc.
+7. **Do not reopen completed experiments** unless a specific new engineering question requires it.
+
+Deliberately *not* the direction: a general theory of authority-to-execution binding. Building this
+implementation surfaced questions broader than this architecture should absorb — they are recorded
+as open in `DESIGN.md` and pursued outside this project, not by adding mechanisms here. Concepts from
+that broader work do not enter Siphonophore's canonical documentation unless this repository's own
+implementation, experiments, or contracts support them.
+
+The list below is documented gaps in an actively developed implementation, not a backlog of
+everything the architecture might eventually support.
 
 ### Not yet implemented or integrated
 
@@ -187,10 +245,19 @@ gaps in a paused implementation, not an active roadmap.
   instances are proven to compose correctly. There is no *orchestration* layer yet — nothing decides
   when to delegate, spins up a second agent, or picks its model in a live deployment; today that's
   done by hand (test code, or `examples/repl.py` if extended).
-- VM and sandbox/namespace-only execution substrates are not implemented. A first *container*
-  substrate does exist — the `k8s_pod` Kubernetes backend, proven against a local `kind` cluster
-  only and not part of the default `Policy` mapping; see
-  [`docs/EXECUTION_K8S.md`](docs/EXECUTION_K8S.md).
+- Two substrates exist behind the execution boundary: Linux/local (`same_process`,
+  `separate_process`, `uid_cgroup`, `uid_cgroup_checkin`) and Kubernetes (`k8s_pod`, proven against a
+  local `kind` cluster only, not part of the default `Policy` mapping, and with no check-in tier —
+  see [`docs/EXECUTION_K8S.md`](docs/EXECUTION_K8S.md)). VM and sandbox/namespace-only substrates are
+  not implemented; adding one should not require redefining Siphonophore's core semantics, though
+  substrate-specific configuration, policy mapping, deployment integration, or evidence mechanisms
+  may still be needed alongside the new backend.
+- The reference harness works but is not yet pleasant to use: `examples/repl.py` drives a single
+  `CognitiveLoop` on the authority-less path, registers only the two portable execution tiers (so
+  neither the `uid_cgroup` nor the `k8s_pod` substrate is reachable from it), and surfaces the
+  resulting `Effect` but never the `Decision` behind it — `Broker.dispatch()` returns only the
+  `Effect`, so an operator cannot see what was actually authorized. Improving this is active work
+  (see **Project status and current direction**), not deferred scaffolding.
 - Platform integrity/attestation is not implemented (see `DESIGN.md` §8). Production credential
   delivery is also not implemented — SPIFFE/SPIRE and JWT+Vault were both considered and neither was
   committed to. See [`docs/EXECUTION.md`](docs/EXECUTION.md).
@@ -237,6 +304,31 @@ silently substituted. Today's Linux implementation exercises exactly two of thes
 — UID/GID and cgroup — via `uid_cgroup`/`uid_cgroup_checkin`; the rest are architectural direction,
 not built. Full per-dimension treatment: [`docs/EXECUTION.md`](docs/EXECUTION.md).
 
+**Substrate boundary.** `ExecutionBackend` is the one seam where concrete substrates attach.
+Everything above it — authority, delegation, policy, decision minting, independent re-verification,
+artifact binding — is substrate-neutral and stays that way; everything Kubernetes-specific,
+Linux-specific, or specific to a substrate not yet written lives below it. Adding a substrate should
+require a new backend and no change to what `Order`, `Authority`, `Intent`, or `Decision` mean; a
+portable test (`tests/test_core_no_k8s_vocabulary.py`) fails if substrate vocabulary leaks upward.
+Full invariant: `DESIGN.md` §10.
+
+**What Siphonophore establishes, and what a deployment must supply.** Within its own call path,
+Siphonophore establishes that no effect is produced without a Gate-minted, `Executor`-re-verified,
+permitted `Decision` whose bound artifact digest matches the code about to run. It does not — and a
+library cannot — establish that its path was the only route to that effect: backends hold no
+credentials of their own and act with whatever authority their calling process already has, so
+whether an alternative path exists is a question about credential custody in the surrounding
+deployment. These are two different properties, and `DESIGN.md` §10's table keeps mediation,
+authority custody, verification, observation, correlation, and attribution separate rather than
+collapsing them into one word.
+
+**Independent observers.** Ground truth is worth more when it comes from outside the trust domain
+being described, and the architecture is deliberately shaped so an external observer needs no
+Siphonophore-specific adapter: real UIDs, real cgroups, real substrate objects any OS- or
+cluster-level tool already knows how to watch. Such an observer strengthens assurance without
+becoming a dependency — no authorization decision anywhere consults one, and none is proposed
+(`DESIGN.md` §5).
+
 **Trust boundaries.** The central rule: whenever something accepted as safe is consumed downstream
 with greater authority, that handoff is named explicitly and made independently checkable where
 practical, rather than trusted because an upstream component already checked it once.[^trusted-enough]
@@ -262,16 +354,20 @@ necessarily provides one.
 
 ## Repository shape
 
-- **`siphonophore_core/`** — `Intent` / `Effect`, `Order` / `Authority` / `Scope`,
-  `Policy` / `Decision` / `Gate`, `Executor` and execution-class backends, execution identity,
-  check-in, and audit/reconciliation.
+- **`siphonophore_core/`** — the SDK. `Intent` / `Effect`, `Order` / `Authority` / `Scope`,
+  `Policy` / `Decision` / `Gate`, `Executor` and the `ExecutionBackend` substrate boundary, the
+  concrete backends behind it (Linux/local and Kubernetes), execution identity, check-in, and
+  audit/reconciliation. Imports nothing from the harness.
 - **`spawn_helper/`** — `siphonophore-spawn`, the minimal C privileged helper for crossing the
   narrow privilege boundary required by UID/cgroup execution. Its pinned interface lives in
   `contracts/spawn_helper.md`.
 - **`scripts/`** — privilege-separated account-management wrappers and sudoers templates.
-- **`siphonophore_harness/`** — the current minimal cognitive loop, model interface,
-  Anthropic-backed model implementation, intent parsing, and broker.
-- **`examples/repl.py`** — interactive live-model reference harness.
+- **`siphonophore_harness/`** — the reference harness, a consumer of the SDK: the minimal cognitive
+  loop, model interface, Anthropic-backed model implementation, intent parsing, and broker. An
+  external harness can consume `siphonophore_core` without any of this.
+- **`examples/repl.py`** — the interactive live-model reference harness.
+- **`experiments/`** — real evidence produced outside the core: not a product feature, not imported
+  by shipped code, not a dependency edge.
 
 ## Requirements
 
@@ -316,7 +412,11 @@ provision their own real, narrow sudoers grant and a real test user as part of t
 must be run as root (e.g. inside a root shell in the colima VM) rather than expecting individual
 `sudo` calls partway through a run.
 
-## Running the live harness
+## Running the reference harness
+
+`examples/repl.py` is the reference harness: a consumer of the SDK, and the place the SDK's
+abstractions get exercised by something with a person in front of it. Making it genuinely pleasant to
+use is current work, not scaffolding — see **Project status and current direction**.
 
 ```bash
 .venv/bin/python examples/repl.py --model <a current Anthropic model id>
@@ -324,8 +424,8 @@ must be run as root (e.g. inside a root shell in the colima VM) rather than expe
 
 Each turn drives a real model call through intent parsing, `Gate`, and `Executor`.
 
-The current live harness uses the authority-less path — a single `CognitiveLoop`/`Broker` pair, one
-principal, no delegation. `CognitiveLoop` and `Broker.dispatch()` are both authority-aware now (see
+It currently uses the authority-less path — a single `CognitiveLoop`/`Broker` pair, one
+principal, no delegation — and registers only the two portable execution tiers. `CognitiveLoop` and `Broker.dispatch()` are both authority-aware now (see
 **Current state** above) and a second, real live agent could be constructed the same way
 `tests/test_harness_loop_linux.py` does — but `examples/repl.py` itself doesn't do that yet; nothing
 here decides when to spin one up or supplies its model. That's still separate, later work.
@@ -334,8 +434,14 @@ here decides when to spin one up or supplies its model. That's still separate, l
 
 - **[`docs/WHY.md`](docs/WHY.md)** — the full argument for why Siphonophore exists, and the
   historical progression from a Strands-specific fix to this general architecture.
-- **[`docs/EXECUTION.md`](docs/EXECUTION.md)** — execution requirements as independent dimensions,
-  what's implemented today versus architectural direction.
+- **`DESIGN.md` §10** — the platform-independence invariant: the substrate-neutral core, the
+  execution substrate boundary, and the table naming which layer establishes which claim. The
+  authoritative statement; everything else defers to it.
+- **[`docs/EXECUTION.md`](docs/EXECUTION.md)** — substrate-neutral execution semantics: the path from
+  request to effect, execution requirements as independent dimensions, and what's implemented today
+  versus architectural direction.
+- **[`docs/EXECUTION_K8S.md`](docs/EXECUTION_K8S.md)** — the Kubernetes realization of that model:
+  tested scope, what the deployment must supply, and this substrate's limitations.
 - **[`docs/EVIDENCE.md`](docs/EVIDENCE.md)** — independent evidence and Belnap reconciliation in
   full, including the execution-identity-versus-logical-agent-identity distinction.
 - **`DESIGN.md`** — current architecture, guarantees, trust boundaries, assumptions, and explicitly
