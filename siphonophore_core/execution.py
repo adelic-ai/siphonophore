@@ -57,6 +57,26 @@ class ArtifactMismatchError(GateViolation):
     real uid/cgroup provisioned for code that was never going to be trusted)."""
 
 
+class DecisionVerificationError(GateViolation):
+    """The Decision itself failed Gate.verify() -- forged, tampered, or downgraded after minting.
+    Distinct from an ordinary policy DENY: a DENY is a real, signed "no" from a Decision that
+    verifies correctly; this means the Decision handed to Executor cannot be trusted at all,
+    regardless of what it claims about `permitted`."""
+
+
+class PolicyDeniedError(GateViolation):
+    """A Decision that verifies correctly (not forged/tampered) but whose `permitted` field is
+    False -- the ordinary, expected policy refusal. Distinct from DecisionVerificationError: this
+    Decision is genuinely the one the Gate minted, and the Gate's own answer was no."""
+
+
+class NoBackendRegisteredError(GateViolation):
+    """No ExecutionBackend is registered for the Decision's `execution_class` on this Executor --
+    a configuration/environment gap, not an authorization judgment. Distinct from a policy
+    decision: the Gate already permitted this intent and chose an execution_class: this Executor
+    simply has nothing registered to carry it out."""
+
+
 class ExecutionBackend(ABC):
     """One execution class's actual dispatch logic. `Executor` delegates to whichever backend is
     registered for `decision.execution_class` -- implement this to add a new class (a container or
@@ -141,9 +161,9 @@ class Executor:
         if decision.intent_id != intent.intent_id or decision.kind != intent.kind:
             raise GateViolation("decision does not correspond to this intent")
         if not self._gate.verify(decision):
-            raise GateViolation("decision failed Gate verification -- forged, tampered, or downgraded")
+            raise DecisionVerificationError("decision failed Gate verification -- forged, tampered, or downgraded")
         if not decision.permitted:
-            raise GateViolation(f"intent {decision.intent_id!r} was not permitted by policy")
+            raise PolicyDeniedError(f"intent {decision.intent_id!r} was not permitted by policy")
 
         if intent.artifact_code is not None:
             actual_digest = digest_of(intent.artifact_code)
@@ -155,5 +175,5 @@ class Executor:
 
         backend = self._backends.get(decision.execution_class)
         if backend is None:
-            raise GateViolation(f"no backend registered for execution_class={decision.execution_class!r}")
+            raise NoBackendRegisteredError(f"no backend registered for execution_class={decision.execution_class!r}")
         return backend.run(decision, intent)

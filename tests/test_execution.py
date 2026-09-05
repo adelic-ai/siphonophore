@@ -10,8 +10,11 @@ import pytest
 
 from siphonophore_core.execution import (
     ArtifactMismatchError,
+    DecisionVerificationError,
     ExecutionError,
     Executor,
+    NoBackendRegisteredError,
+    PolicyDeniedError,
     SameProcessBackend,
     SeparateProcessBackend,
 )
@@ -101,6 +104,65 @@ def test_no_backend_registered_for_unknown_execution_class(gate: Gate):
     decision = gate.submit(intent)
     with pytest.raises(GateViolation):
         executor.execute(decision, intent)
+
+
+# ---- Stage 1 (docs/REFERENCE_HARNESS_IMPLEMENTATION_PLAN.md): narrow GateViolation subclasses ---
+# The three tests above are left unmodified as compatibility evidence -- broad `GateViolation`
+# still catches every one of these conditions. The tests below prove the *specific* subclass is
+# what's actually raised at each site now, without touching the broad assertions.
+
+def test_forged_decision_raises_decision_verification_error(executor: Executor):
+    forged = Decision(
+        intent_id="i-1", principal_id="alice", kind="run_artifact",
+        permitted=True, execution_class="same_process", artifact_digest="",
+        token="0" * 64,
+    )
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low", artifact_code="pass")
+    with pytest.raises(DecisionVerificationError) as exc_info:
+        executor.execute(forged, intent)
+    assert isinstance(exc_info.value, GateViolation)
+
+
+def test_denied_decision_raises_policy_denied_error(executor: Executor):
+    intent = Intent(kind="not_a_real_kind", principal_id="alice", intent_id="i-1", consequence="low")
+    decision = executor._gate.submit(intent)
+    assert decision.permitted is False
+    with pytest.raises(PolicyDeniedError) as exc_info:
+        executor.execute(decision, intent)
+    assert isinstance(exc_info.value, GateViolation)
+
+
+def test_no_backend_registered_raises_no_backend_registered_error(gate: Gate):
+    executor = Executor(gate, backends={})  # deliberately empty registry
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low", artifact_code="pass")
+    decision = gate.submit(intent)
+    with pytest.raises(NoBackendRegisteredError) as exc_info:
+        executor.execute(decision, intent)
+    assert isinstance(exc_info.value, GateViolation)
+
+
+def test_new_subclasses_are_siblings_not_related_to_each_other_or_to_artifact_mismatch():
+    """Structural guard: the three new subclasses and the pre-existing ArtifactMismatchError are
+    all direct GateViolation subclasses, not related to one another -- catching one must not
+    accidentally catch another."""
+    new_types = (DecisionVerificationError, PolicyDeniedError, NoBackendRegisteredError)
+    for cls in new_types:
+        assert issubclass(cls, GateViolation)
+        assert not issubclass(cls, ArtifactMismatchError)
+        assert not issubclass(ArtifactMismatchError, cls)
+    assert len(set(new_types) | {ArtifactMismatchError}) == 4
+
+
+def test_decision_intent_mismatch_is_unaffected_by_this_stage(executor: Executor):
+    """Out of scope for Stage 1 (docs/REFERENCE_HARNESS_IMPLEMENTATION_PLAN.md Refinement 1):
+    decision/intent correspondence failure keeps raising the bare GateViolation base class,
+    unchanged -- this stage only adds specificity to the three sites named in the plan."""
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low", artifact_code="pass")
+    decision = executor._gate.submit(intent)
+    mismatched_intent = replace(intent, intent_id="i-different")
+    with pytest.raises(GateViolation) as exc_info:
+        executor.execute(decision, mismatched_intent)
+    assert type(exc_info.value) is GateViolation
 
 
 def test_register_backend_extends_dispatch_without_touching_executor():
