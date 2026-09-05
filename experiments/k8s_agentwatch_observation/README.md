@@ -356,3 +356,169 @@ with its own tool-permission prompts bypassed, constrained only by the Linux/VM 
 repository or system changes made. This is recorded as one data point that the "hands-free agent +
 externally constrained OS identity" pattern worked for this specific read-only analysis workload — not
 as a general claim that this pattern is sufficient or safe for arbitrary autonomous workloads.
+
+## Stage 2: dual-observation experiment result (2026-09-04)
+
+**This is the actual, executed Stage 2** — composing Stage 1 (audit leg, above, reused unmodified)
+with the topology-probe's eBPF/cgroup machinery (previous section) against a REAL
+`Broker.dispatch()` for the first time, using AgentWatch's existing tooling completely unmodified
+and no AgentWatch↔Siphonophore trust coupling. Implementation lives alongside this file:
+`stage2_privileged.py` (the only code that ever invokes `sudo`), `stage2_observer.py` (the
+concurrent live-Pod/cgroup watcher), `stage2_correlate.py` (pure cgroup-path parsing, unit-tested
+in `test_stage2_correlate.py` with no cluster/privilege needed), and
+`test_stage2_dual_observation.py` (the experiment itself).
+
+**Result: FULL SUCCESS.** All seven pre-registered ALLOW criteria passed. The one attempt run —
+`stage2-allow-9074028c` — was the only scientific ALLOW attempt; no retry was needed or performed.
+
+### Privileged surface actually used (externally provisioned, not designed or installed by this
+work unit)
+
+A separate, already-completed privileged provisioning stage installed and granted exactly:
+
+```
+sudo -n /usr/local/libexec/sipho-stage2/cluster ensure
+sudo -n /usr/local/libexec/sipho-stage2/cluster teardown
+sudo -n /usr/local/libexec/sipho-stage2/capture-30    (no trailing argument — see note below)
+sudo -n /usr/local/libexec/sipho-stage2/capture-60
+sudo -n /usr/local/libexec/sipho-stage2/capture-120
+```
+
+confirmed via `sudo -n -l` before any code was written, and confirmed to grant *nothing* beyond
+this: `docker ps`, `kind get clusters`, and `nft list ruleset` all still fail with a permission
+error under this identity throughout the whole experiment. The installed eBPF probe
+(`fork_exec_probe.bt`, world-readable) was confirmed byte-identical to AgentWatch's own
+`BPFTRACE_PROGRAM` at the pinned commit before use. **One implementation correction found during
+integration, not a design change:** the sudoers grant's trailing `""` means "invocable with *no*
+arguments," not "invocable with one empty-string argument" (the same convention already documented
+for `siphonophore-spawn ""` elsewhere in this repo) — `sudo -n capture-30 ""` was refused
+("sudo: a password is required"); `sudo -n capture-30` (bare) was accepted. `stage2_privileged.py`
+uses the bare form.
+
+Everything else — `kubectl` against the worker kubeconfig
+(`/etc/sipho-stage2/sipho-agent.kubeconfig`), reading the audit log, walking `/sys/fs/cgroup`, and
+reading `/proc/<pid>/cgroup` for arbitrary (including root-owned) processes — worked completely
+**unprivileged**, confirmed empirically before relying on it (`build_cgroup_id_to_path()` against
+the live cluster, `/proc/1/cgroup`, and `/proc/<kube-apiserver-pid>/cgroup` were all plain,
+non-`sudo` reads that succeeded). No crictl/Docker inspection was needed or attempted anywhere,
+matching the privilege-minimization design exactly.
+
+### The attempt
+
+- `intent_id` = `marker` = attempt id: `stage2-allow-9074028c` (`marker` was actually
+  `sp2-f0e0fbd4`, 11 chars, well under the comm(7) 15-char limit).
+- eBPF capture: `capture-120` (chosen over `capture-60` because this cluster was freshly created
+  moments earlier and `python:3.12-slim` had not yet been pulled on this node — a concrete,
+  stated-in-advance reason, not a post-hoc adjustment), started and confirmed attached
+  ("Attaching 2 probes...") *before* `broker.dispatch()`.
+- Artifact code (real `intent.artifact_code`, no core changes): copies `/bin/sleep` to
+  `/tmp/<marker>` and `os.execv`s it with `argv[0]=<marker>` — the same technique the topology
+  probe's corrected Attempt 3 used, now driven by a real `Decision`/`Effect` for the first time.
+  `python:3.12-slim` (Debian-based) has a real coreutils `sleep`, so there is no BusyBox
+  argv[0]-applet-dispatch failure mode to worry about here.
+- A `LiveObserver` thread, started before dispatch, independently discovered the Pod by its
+  `siphonophore.dev/intent-id` label, waited for the `artifact` container to report
+  `state.running` + a `containerID`, and snapshotted AgentWatch's own unmodified
+  `build_cgroup_id_to_path()` at that instant — while the container was still alive, not after
+  `Effect` returned (by which point it had already exited).
+- Evidence preserved at `/tmp/sipho-stage2-evidence/stage2-allow-9074028c/` (outside the repo, not
+  committed): per-category raw JSON, raw `bpftrace.stdout`/`.stderr`, the live-window cgroup map,
+  and a full result summary.
+
+### Evidence, by category
+
+- **A (Siphonophore claim):** `execution_class="k8s_pod"`, `backend_invocations=1`,
+  `pod_name="sipho-stage2-allow-9074028c-2d018fb1"`, `phase="Succeeded"`, `exit_code=0`.
+- **B (Kubernetes audit, AgentWatch's unmodified `k8s_audit.parse_lines()`):** exactly one
+  `("create", "pods:default/sipho-stage2-allow-9074028c-2d018fb1")` event, `success=True`,
+  principal `kubernetes-admin` (kind's local admin identity, same as Stage 1 observed) — an
+  API-server-level fact only, not process-execution proof.
+- **C (live Kubernetes object, independently queried via the worker kubeconfig, never
+  `effect.detail`):** `pod_name="sipho-stage2-allow-9074028c-2d018fb1"` (exact string match to A
+  and B), `pod_uid="c30e89eb-6794-4eef-a748-5369244b259a"`,
+  `container_id="containerd://006a8b5a2d32884fc4f9e138be8fbab2d807ee8549d328d895cc5508c5a68f65"`.
+- **D (host kernel eBPF, AgentWatch's unmodified `ebpf.parse_lines()`):** exactly one EXEC
+  candidate matching the marker: `pid=100801, ppid=0, uid=0, cgroup=201405,
+  comm="sp2-f0e0fbd4", exe="/tmp/sp2-f0e0fbd4"` — out of 837 total parsed events in the 120s
+  capture (kubelet/coredns/this Claude Code session/etc. ambient activity, exactly as the topology
+  probe's own capture also showed).
+- **E (derived correlation, never itself described as independent observation):** cgroup id
+  `201405` → the live-window map → path
+  `.../kubelet-kubepods-besteffort.slice/kubelet-kubepods-besteffort-podc30e89eb_6794_4eef_a748_5369244b259a.slice/cri-containerd-006a8b5a2d32884fc4f9e138be8fbab2d807ee8549d328d895cc5508c5a68f65.scope`
+  → AgentWatch's unmodified `pod_uid_from_cgroup_path()` → `c30e89eb-6794-4eef-a748-5369244b259a`
+  (**exact string equality** with Category C's independently-read Pod UID) and, separately, the
+  same path's `cri-containerd-<id>.scope` segment →
+  `006a8b5a2d32884fc4f9e138be8fbab2d807ee8549d328d895cc5508c5a68f65` (**exact string equality**,
+  after only stripping the known `containerd://` prefix, with Category C's `containerID`).
+
+### Pre-registered criteria — all seven
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Siphonophore ALLOW success (Decision permitted, one backend invocation, `Succeeded`/`exit_code=0`) | PASS |
+| 2 | Audit event matches the live-discovered Pod name, which equals `Effect.detail["pod_name"]` | PASS |
+| 3 | Exactly one kernel EXEC event for the attempt's unique marker | PASS |
+| 4 | eBPF cgroup → live-window map → `pod_uid_from_cgroup_path()` == independently-read Pod UID | PASS |
+| 5 | Same cgroup path's container id == independently-read `containerID` (exact, prefix-normalized only) | PASS |
+| 6 | Three-domain agreement (A/B/C pod name, C/E Pod UID, C/E container id) without relying on timing alone | PASS |
+| 7 | Trust boundary: no `agentwatch.reconciler`/`IdentityCorrelator`/`GrantEvent`/`k8s_scope` import anywhere in the new Stage 2 code; `siphonophore_core`/`siphonophore_harness` diff empty | PASS (see note) |
+
+**Note on criterion 7 — a real bug in the test's own self-check, found and fixed, not a re-run of
+the science.** The test's first self-check did a bare substring search for the forbidden terms
+across its own file's text — which trivially found them inside the very Python tuple literal that
+*defines* the forbidden-terms list (`forbidden = ("agentwatch.reconciler", ...)` necessarily types
+out the strings it's checking for). This produced a false-negative on the actual attempt run,
+preserved unedited as `99_result_summary.json` in the evidence directory. The check was rewritten
+to match only genuine `import`/`from ... import` statement lines (see the test file's own
+trust-boundary block), re-verified by direct `grep` of all four new files' actual import lines
+(stdlib, `pytest`, `correlate.py`, the three `stage2_*.py` modules, `siphonophore_core.*`/
+`siphonophore_harness.*`, and the exact same `agentwatch.events`/`agentwatch.groundtruth.ebpf`/
+`demo/k8s/ebpf/pod_lookup` touchpoints Stage 1 and the topology probe already used — nothing else),
+and by `git diff --stat siphonophore_core siphonophore_harness` (empty). This correction is a fix
+to the test harness's own verification logic, not a repeated Kubernetes/eBPF/dispatch attempt —
+criteria 1–6 are unaffected and were not rerun. Both the original (buggy) result and this
+correction are preserved in the evidence directory as separate files.
+
+### DENY (Stage 1, rerun verbatim, no changes)
+
+Both `test_deny_direct_dispatch_internal_and_external_absence` and
+`test_deny_via_cognitive_loop_windowed_absence_only` were rerun byte-for-byte unmodified against
+this same cluster instance and **passed**. No new eBPF-based DENY criterion was added — a denied
+dispatch never reaches `K8sPodBackend.run()`, so there is no Pod, cgroup, or marker to observe at
+the kernel level; any such check would degrade to an untargeted, ambient-activity-swamped claim
+strictly weaker than the audit leg's existing namespace+`sipho-`-prefix-scoped absence check. The
+asymmetry Stage 1 already established between the two DENY forms (direct-dispatch gets a
+label-specific live-state check; CognitiveLoop only gets a windowed/global one) is unchanged.
+
+### What Stage 2 does NOT establish
+
+Everything Stage 1 and the topology-probe checkpoint already excluded, unchanged and restated: no
+managed-Kubernetes validation (`kind` only, one specific cgroup-v2/containerd/systemd-driver
+topology); no validation of other cgroup drivers or container runtimes; no adversarial-workload
+robustness; no production-reliability claim; no causal proof that Siphonophore's mediation *caused*
+the observed execution (only that the same concrete workload is independently visible from three
+vantage points); no authorization decision was ever taken based on any AgentWatch observation, and
+none is proposed. AgentWatch remains outside Siphonophore's trust domain: it is imported only as
+`agentwatch.events`, `agentwatch.groundtruth.k8s_audit` (via `correlate.py`, unchanged from Stage 1),
+`agentwatch.groundtruth.ebpf`, and `demo/k8s/ebpf/pod_lookup` — never `agentwatch.reconciler`
+(confirmed above), and it is still not a `pyproject.toml` dependency anywhere.
+
+**AgentWatch cgroup-regex caveat, carried forward unfixed (by design, per this work unit's scope):**
+`pod_lookup.py`'s `pod_uid_from_cgroup_path()` docstring describes `kubepods-<qos>-pod<uid>.slice`;
+the real path this cluster produces is `kubelet-kubepods-besteffort-pod<uid>.slice` (an undocumented
+extra `kubelet-` prefix, identical to what the topology probe found). It still resolves correctly
+here only because the regex is an unanchored `re.search`. Confirmed working on this attempt; not
+hardened, and AgentWatch itself remains untouched.
+
+**Still deferred, not resolved by this work unit:** a dedicated `execution_id` distinct from
+`intent_id` (irrelevant to this single-sequential-attempt experiment, as anticipated in the Stage 2
+design report — not needed here, not built here).
+
+### Change/containment summary
+
+- Siphonophore core (`siphonophore_core/`, `siphonophore_harness/`): **untouched** — confirmed by
+  `git diff --stat` inside the experiment itself (criterion 7) and by this commit's own diff.
+- AgentWatch: **untouched.**
+- System/helper files: **untouched** by this work unit — the `sipho-stage2` helpers and sudoers
+  grant were installed by a separate, already-completed privileged provisioning stage before this
+  implementation began; this work unit only ever *called* the five fixed invocations listed above.
