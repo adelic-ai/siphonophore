@@ -1,24 +1,35 @@
 # Kubernetes mediation-bypass experiment
 
-**STATUS: PRE-REGISTERED DESIGN — IMPLEMENTED, NOT EXECUTED.**
+**STATUS: EXECUTED AND CLOSED — 9/9 PRE-REGISTERED CRITERIA PASS.**
 
-Nothing here has been run as a scientific experiment. There are no results in this document, no
-cluster has been created, no authority topology has been provisioned, and no bypass has been
-attempted. Every criterion below was written before any code existed, which is the point of having
-written it then: the criteria cannot be adjusted after seeing the evidence if they were published
-before the evidence could be collected.
+The result is bounded to the tested deployment, the pre-registered threat model, and the enumerated
+bypass paths (`README.md`'s own falsification list, F-01…F-13). It does not establish absolute
+non-bypassability or universal causal necessity. The curated final scientific record, including the
+exact bounded conclusion, the criterion-by-criterion verdicts, the positive mediated execution, the
+F-05 ServiceAccount finding, and the limitations that bound interpretation, is in
+[`RESULT.md`](RESULT.md).
 
-The design in this document was published first, as commit
-`45f82cd8a5edb0c28f9c8517bea11e570d064908`, and has not been amended since. The experiment
-machinery (`sipho_bypass/`, its cluster-free tests, and
-[`PROVISIONING_SPEC.md`](PROVISIONING_SPEC.md)) was implemented afterwards against it. Where
-implementation revealed something that needed stating more precisely, it is recorded below under
-**Pre-execution implementation clarifications** — added before any execution, never by editing the
-criteria.
+**Everything below this point is the pre-registration as originally published and executed against —
+preserved unedited as the scientific record it is, not rewritten to read as though the result was
+known in advance.** The design in this document was published first, as commit
+`45f82cd8a5edb0c28f9c8517bea11e570d064908`, and has not been amended since. Every criterion below was
+written before any code existed and before any scientific execution — the point of having written it
+then is exactly that the criteria could not be adjusted after seeing the evidence, because they were
+published before the evidence could be collected. The paragraph immediately below, describing this
+document as pre-execution, is itself part of that original, unedited record — read it as history, not
+as this experiment's current status.
 
-This is a design/pre-registration artifact on a research branch, deliberately not merged to `main`
-and deliberately not linked from the root `README.md` — the root README indexes *results*, and
-there are none here yet.
+The experiment machinery (`sipho_bypass/`, its cluster-free tests, and
+[`PROVISIONING_SPEC.md`](PROVISIONING_SPEC.md)) was implemented afterwards against the pre-registration
+above. Where implementation revealed something that needed stating more precisely, it is recorded
+below under **Pre-execution implementation clarifications** — added before any execution, never by
+editing the criteria.
+
+*Original pre-registration note, preserved as published:* "This is a design/pre-registration artifact
+on a research branch, deliberately not merged to `main` and deliberately not linked from the root
+`README.md` — the root README indexes *results*, and there are none here yet." That note described
+this document's status as of `45f82cd8a5edb0c28f9c8517bea11e570d064908`; see `RESULT.md` for what has
+changed since.
 
 ## The question
 
@@ -812,6 +823,9 @@ distinguish "the bypass failed" from "the observation machinery cannot see this 
 
 ---
 
-*Pre-registered design. The machinery is implemented and its cluster-free tests pass; the
-authority topology has not been provisioned, no cluster has been created, no bypass has been
-attempted, and no result has been obtained.*
+*Original closing note, preserved as published at `45f82cd8a5edb0c28f9c8517bea11e570d064908`:
+"Pre-registered design. The machinery is implemented and its cluster-free tests pass; the authority
+topology has not been provisioned, no cluster has been created, no bypass has been attempted, and no
+result has been obtained." That was accurate at the time this document was written. It is no longer
+this experiment's current status — see [`RESULT.md`](RESULT.md) for the executed, closed result:
+9/9 pre-registered criteria PASS, bounded to the tested deployment and the enumerated threat model.*

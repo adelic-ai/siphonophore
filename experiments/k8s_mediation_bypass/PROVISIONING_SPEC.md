@@ -1,15 +1,18 @@
 # Provisioning specification — Kubernetes mediation-bypass experiment
 
-**STATUS: CONTRACT FOR A LATER PRIVILEGED STAGE. NOTHING HERE HAS BEEN PROVISIONED.**
+**STATUS: HISTORICAL PRE-EXECUTION PROVISIONING CONTRACT — CONSUMED. See
+[`RESULT.md`](RESULT.md) for the completed experiment's final scientific result.**
 
 This document is derived from the implemented experiment code in `sipho_bypass/`, not written
 speculatively ahead of it. Every requirement below exists because some specific module needs it,
-and the module is named. Nothing in this file was created, installed, or configured by the
-implementation stage — creating it requires authority that a disposable development VM does not
-and should not have.
+and the module is named. Nothing in this file was created, installed, or configured *by the
+implementation stage itself* — that required authority a disposable development VM does not and
+should not have; provisioning against this contract, and the scientific execution it enabled, are
+recorded as complete in `RESULT.md`. The requirements below are preserved as originally written,
+not revised to match the observed outcome.
 
-Read [`README.md`](README.md) (the pre-registration) first. This file only says how to build the
-deployment that document describes.
+Read [`README.md`](README.md) (the pre-registration) first. This file only says how the deployment
+that document describes was built.
 
 The overriding rule: **if any requirement here is unmet at run time, the experiment is
 INCONCLUSIVE, never a pass.** A misconfigured fixture that quietly weakens the test is the failure
