@@ -31,13 +31,16 @@ substrate-neutral model this document is one realization of.
   [`../experiments/k8s_agentwatch_observation/README.md`](../experiments/k8s_agentwatch_observation/README.md).
   That is a correlation result about executions that happened; it is not a claim about path
   exclusivity, and none is made here.
-- **Mediation-bypass study** — pre-registered and implemented on the `explore/k8s-mediation-bypass`
-  branch. The study has been executed and closed; publication of its final scientific record into
-  that branch's own documentation is a separate, not-yet-done integration task — the branch's
-  committed README still reads "PRE-REGISTERED DESIGN — IMPLEMENTED, NOT EXECUTED," which is stale
-  relative to the study's actual execution status. Its subject is the deployment half of `DESIGN.md`
-  §10's split — substrate-authority custody — not a property of this backend, so no specific result
-  from it is asserted in this or any other canonical document pending that publication.
+- **Mediation-bypass study** — executed and scientifically closed: 9/9 pre-registered criteria
+  PASS. Curated result: [`../experiments/k8s_mediation_bypass/RESULT.md`](../experiments/k8s_mediation_bypass/RESULT.md);
+  original pre-registration and full design record:
+  [`../experiments/k8s_mediation_bypass/README.md`](../experiments/k8s_mediation_bypass/README.md).
+  Bounded conclusion: under the tested deployment and enumerated threat model, the requester without
+  substrate authority could reach the target Kubernetes effect only through the authorized mediated
+  path, while none of the enumerated bypass paths produced it — not a claim of absolute
+  non-bypassability, universal causal necessity, or that Siphonophore alone prevents bypass. Its
+  subject is the deployment half of `DESIGN.md` §10's split — substrate-authority custody — not a
+  property of this backend; raw evidence remains outside this repository (`RESULT.md` §12).
 - **Managed clusters** — untested. `kind` only.
 
 ## What's proven

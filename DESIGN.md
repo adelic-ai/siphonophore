@@ -620,8 +620,14 @@ redesign mandate; each is a question to answer when a concrete engineering need 
   establish. Nothing in Siphonophore requests, requires, or verifies it.
 - **Where the SDK/deployment guarantee boundary is documented canonically.** §10's table is this
   repository's answer as of this document. A pre-registered study of the deployment half of that
-  split exists on the `explore/k8s-mediation-bypass` branch; it has been executed and closed, but
-  that branch's own committed README has not yet been updated to say so (it still reads
-  "IMPLEMENTED, NOT EXECUTED") — a publication gap in that branch's documentation, not an open
-  question about whether the study ran. No specific result from it is asserted in canonical
-  documentation pending that publication.
+  split — the `explore/k8s-mediation-bypass` branch — has been executed, scientifically closed, and
+  published: 9/9 pre-registered criteria PASS, curated result at
+  `experiments/k8s_mediation_bypass/RESULT.md`. Bounded conclusion: under the tested deployment and
+  enumerated threat model, the requester without substrate authority could reach the target
+  Kubernetes effect only through the authorized mediated path, while none of the enumerated bypass
+  paths produced it. That does not establish absolute non-bypassability, universal causal necessity,
+  or that Siphonophore alone prevents bypass — deployment credential custody supplied the authority
+  separation the result depends on, and Siphonophore supplied authorization semantics within that
+  boundary, exactly as §10's table already distinguishes. The open question this bullet names is
+  narrower than the study itself: whether §10's table remains the right *canonical location* for
+  that split as more such studies accumulate, not whether the split holds.
