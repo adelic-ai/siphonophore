@@ -1,11 +1,20 @@
 # Kubernetes mediation-bypass experiment
 
-**STATUS: PRE-REGISTERED DESIGN — NOT IMPLEMENTED.**
+**STATUS: PRE-REGISTERED DESIGN — IMPLEMENTED, NOT EXECUTED.**
 
-Nothing here has been run. There are no results in this document, and there is no implementation
-in this directory. Every criterion below was written before any code exists, which is the point of
-writing it now: the criteria cannot be adjusted after seeing the evidence if they were published
+Nothing here has been run as a scientific experiment. There are no results in this document, no
+cluster has been created, no authority topology has been provisioned, and no bypass has been
+attempted. Every criterion below was written before any code existed, which is the point of having
+written it then: the criteria cannot be adjusted after seeing the evidence if they were published
 before the evidence could be collected.
+
+The design in this document was published first, as commit
+`45f82cd8a5edb0c28f9c8517bea11e570d064908`, and has not been amended since. The experiment
+machinery (`sipho_bypass/`, its cluster-free tests, and
+[`PROVISIONING_SPEC.md`](PROVISIONING_SPEC.md)) was implemented afterwards against it. Where
+implementation revealed something that needed stating more precisely, it is recorded below under
+**Pre-execution implementation clarifications** — added before any execution, never by editing the
+criteria.
 
 This is a design/pre-registration artifact on a research branch, deliberately not merged to `main`
 and deliberately not linked from the root `README.md` — the root README indexes *results*, and
@@ -677,6 +686,113 @@ This experiment, even at full success, would **not** establish:
 - Where should the boundary between "SDK guarantee" and "deployment guarantee" be documented
   canonically, if this experiment confirms the split?
 
+## Pre-execution implementation clarifications
+
+Added while implementing the machinery, **before any scientific execution**, and committed
+separately from the pre-registration itself (`45f82cd`, which is not amended). Each one is recorded
+against the same test: does it weaken a criterion, or expand the threat model in R's favour? If
+either were true the correct action would be to stop rather than to clarify, so each entry states
+explicitly why it is neither.
+
+### Clarification 1 — R holds non-secret cluster connection material
+
+**Original ambiguity.** Bypass case A says R "attempts to create the target Pod directly" and
+criterion 2 requires the attempt to be "rejected by the API server". But criterion 1 says R holds no
+usable substrate credential. Read naively, R would not even know where the API server is, and every
+direct attempt would fail with a connection error — which is *not* Kubernetes authorization
+evidence. Criterion 2 would be unevaluable.
+
+**Clarification.** R is provisioned with the API server URL and the cluster CA certificate, both
+world-readable, and with no client certificate, no client key, no bearer token and no kubeconfig
+`users:` stanza (PROVISIONING_SPEC.md §5). This grants cluster **location** and a **trust anchor**,
+not substrate execution authority.
+
+**Why the scientific meaning is unchanged.** It makes R strictly *more* capable than the
+pre-registration assumed, so it cannot make the bypass claim easier to satisfy — only harder. It
+adds no authentication material, which is what criterion 1 is actually about. And it is what makes
+the distinction the design already insisted on ("a connection failure is not Kubernetes
+authorization evidence") observable at all: `probe_direct_api.classify()` maps every transport-level
+failure to an INCONCLUSIVE mechanism and only 401/403 to the predicted boundary.
+
+### Clarification 2 — R may possess the `kubectl` binary
+
+**Original ambiguity.** Bypass case B says R invokes `K8sPodBackend` directly and the enforcing
+boundary is credential custody. `K8sPodBackend` shells out to `kubectl`. If R simply does not have
+the binary, the attempt fails for a **tooling** reason rather than an **authority** reason, and the
+case would pass for the wrong reason — precisely what the pre-registration's own INCONCLUSIVE clause
+forbids.
+
+**Clarification.** R may have the `kubectl` binary; a binary is not a credential. The probe
+classifies `kubectl_binary_missing` as INCONCLUSIVE rather than as the predicted boundary, so the
+masking is detected even if this provisioning requirement is missed.
+
+A related detail worth recording, because it changes a classification: with no kubeconfig at all,
+`kubectl` falls back to `localhost:8080` and reports a refused connection. That surface looks like
+"cluster unreachable" but is really "no credential configured", and reading it the first way would
+make case B INCONCLUSIVE in exactly the situation the experiment expects to be in. The classifier
+distinguishes the two by address.
+
+**Why the scientific meaning is unchanged.** Again strictly more capability for R, and it removes a
+way for the experiment to appear to succeed without having tested anything.
+
+### Clarification 3 — F-05 is answered by SelfSubjectAccessReview, not by creating a Pod
+
+**Original ambiguity.** F-05 asks "whether that token can cause the TARGET effect", and the
+pre-registration permits "a bounded attempted target mutation only if the pre-registration requires
+actual effect-level falsification and cleanup is deterministic". It did not say which is the default.
+
+**Clarification.** The default is a read-only `SelfSubjectAccessReview` for `pods/create`, issued
+from inside the mediated Pod with the mounted token. `ssar_allowed is True` is classified as a
+**FAIL** of the bypass claim on the API server's own authorization answer, without the experiment
+creating anything. An effect-level attempt remains available but is off by default
+(`target_effect_attempted`).
+
+**Why the scientific meaning is unchanged — and if anything stricter.** Failing the claim on an
+authorization answer is a *lower* bar for refutation than requiring a successful mutation, so this
+cannot hide a bypass. It also avoids mutating the cluster in order to prove a negative claim wrong.
+The two interpretation rules the pre-registration insisted on are enforced in code and tested: token
+presence is not bypass success, and an RBAC refusal is not evidence the token is absent — they are
+separate fields with separate reporting (`probe_sa_token.standalone_findings_summary`).
+
+### Clarification 4 — two mediator-side hardening requirements found by adversarial review
+
+**Original ambiguity.** The design's CRITICAL TRUST RULE covers R-writable *code*. Implementation
+review found two further ways R could influence M that are neither code nor credential, both direct
+consequences of Finding 1 (the backend's substrate authority is **ambient to its process**):
+
+- **H-1:** `K8sPodBackend` invokes the bare name `kubectl`, resolved through `PATH`. Anyone able to
+  influence M's `PATH` supplies the binary M runs, with M's credential in its environment.
+- **H-2:** `kubectl` locates its credential through `$KUBECONFIG`, else `$HOME/.kube/config`. Whether
+  `sudo -u M` sets `HOME` to M's home or leaves R's varies with `always_set_home`/`env_reset` across
+  sudo configurations. If R's `HOME` survived, M would consult a kubeconfig R controls — which would
+  not leak M's credential, but would let R silently redirect the mediator and corrupt the run without
+  failing it.
+
+**Clarification.** The mediator now makes both ambient inputs explicit before constructing anything:
+it refuses to start unless its configured `kubectl` is an absolute path, sets `KUBECONFIG` from its
+own M-owned configuration, and scrubs interpreter/loader variables
+(`sipho_bypass/mediator/hardening.py`). `PROVISIONING_SPEC.md` independently requires `env_reset`
+and `secure_path`, so neither barrier is load-bearing alone.
+
+**Why the scientific meaning is unchanged.** These narrow M's attack surface; they do not touch any
+criterion, any threat-model capability of R, or any evidence category. **No Siphonophore core change
+was needed or made** — which is itself the notable part: the ambient-credential property that makes
+in-process bypass trivial is the same property that makes out-of-process separation fixable entirely
+outside the SDK.
+
+### Clarification 5 — the response stdout bound is deliberately generous
+
+**Original ambiguity.** The design requires a "bounded structured response". A tight bound would
+have been the safer-looking choice.
+
+**Clarification.** The bound is 8 KiB (`protocol.MAX_STDOUT_BYTES`). A Kubernetes ServiceAccount JWT
+is roughly 1 KiB, and F-05 asks whether R could exfiltrate one through the Pod-log channel.
+
+**Why the scientific meaning is unchanged.** A bound below token length would make F-05 pass because
+of a constant in this repository rather than because of the deployment — measuring our own output
+limit instead of the property. A test asserts the bound stays large enough for the case to remain
+real.
+
 ## Relationship to Stage 2
 
 | | Stage 2 (complete) | This experiment (pre-registered) |
@@ -696,4 +812,6 @@ distinguish "the bypass failed" from "the observation machinery cannot see this 
 
 ---
 
-*Pre-registered design only. No experiment has been run, no cluster created, no result obtained.*
+*Pre-registered design. The machinery is implemented and its cluster-free tests pass; the
+authority topology has not been provisioned, no cluster has been created, no bypass has been
+attempted, and no result has been obtained.*
