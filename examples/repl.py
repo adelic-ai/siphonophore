@@ -59,6 +59,45 @@ except ImportError:
     raise SystemExit(1)
 
 
+# Stage 4B: fixed session-identity banner -- a module-level constant, not generated art. Presentation
+# only; carries no capability/session information of its own (that stays in render_startup_banner()).
+_BANNER = (
+    "╔══════════════════════════════════════╗\n"
+    "║             SIPHONOPHORE             ║\n"
+    "║                                      ║\n"
+    "║      mediated agent execution        ║\n"
+    "╚══════════════════════════════════════╝"
+)
+
+
+def render_logo() -> str:
+    """Returns the fixed Siphonophore startup banner. Static text, no dependency on profile/session
+    state -- that disclosure stays in render_startup_banner(), printed separately beneath this."""
+    return _BANNER
+
+
+def should_clear_screen(*, stream: object, term: str | None, no_clear: bool) -> bool:
+    """True only when clearing is safe and wanted: a genuinely interactive terminal (stream.isatty()
+    is True), TERM isn't "dumb", and --no-clear wasn't passed. Any ambiguity (isatty missing/raises,
+    non-TTY stream, piped/captured output) resolves to False -- presentation-only, never load-bearing,
+    so the safe default is to leave the terminal alone."""
+    if no_clear:
+        return False
+    if term == "dumb":
+        return False
+    try:
+        return bool(stream.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def clear_screen(stream: object) -> None:
+    """Smallest portable terminal mechanism: ANSI clear-screen + cursor-home, written directly to the
+    given stream. No subprocess (`clear`/`cls`), no OS-specific call, no third-party TUI dependency."""
+    stream.write("\x1b[2J\x1b[H")
+    stream.flush()
+
+
 # Plain-language operator labels for siphonophore_harness.outcome.OutcomeCategory. The category
 # itself -- the semantic classification -- always comes from classify_outcome(); this dict only
 # supplies the words shown for each already-classified category, never a substitute for it.
@@ -175,6 +214,11 @@ def main() -> int:
     parser.add_argument("--principal-id", default="human-operator")
     parser.add_argument("--verbose", action="store_true", help="also print the raw model completion")
     parser.add_argument(
+        "--no-clear",
+        action="store_true",
+        help="do not clear the terminal on interactive startup",
+    )
+    parser.add_argument(
         "--grant-root-authority",
         action="store_true",
         help=(
@@ -198,6 +242,11 @@ def main() -> int:
 
     loop = CognitiveLoop(model=model, broker=profile.broker, principal_id=args.principal_id, authority=authority)
 
+    if should_clear_screen(stream=sys.stdout, term=os.environ.get("TERM"), no_clear=args.no_clear):
+        clear_screen(sys.stdout)
+
+    print(render_logo())
+    print()
     print(render_startup_banner(profile, model_id=args.model, principal_id=args.principal_id, authority=authority))
     print("Every message you type becomes a real turn: real model call -> parse_intent -> Gate -> Executor.")
     print("Type 'exit' or Ctrl-D to quit.\n")

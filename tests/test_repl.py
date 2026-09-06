@@ -17,6 +17,7 @@ directly from its file path rather than via a normal import.
 from __future__ import annotations
 
 import importlib.util
+import io
 from pathlib import Path
 
 import pytest
@@ -212,11 +213,15 @@ def test_repl_module_is_importable_without_readline(monkeypatch):
     assert module.readline is None
 
 
-def test_repl_adds_no_custom_terminal_escape_parsing():
+def test_repl_adds_no_custom_terminal_input_escape_parsing():
+    """Stage 4A guarantee, narrowed for Stage 4B: no custom parsing of arrow-key/cursor-movement
+    *input* escape sequences -- readline (or its absence) remains the sole input-editing mechanism.
+    Stage 4B's clear_screen() writes a fixed ANSI clear/home *output* sequence (\\x1b[2J\\x1b[H); that's
+    presentation, not input parsing, so it's exempted rather than forbidden outright."""
     source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
-    assert "\x1b[" not in source
+    for arrow in ("\x1b[A", "\x1b[B", "\x1b[C", "\x1b[D"):
+        assert arrow not in source
     assert "\\033[" not in source
-    assert "\\x1b[" not in source
 
 
 # ---- outcome/error rendering: classify_outcome() is the sole semantic source ---------------------
@@ -282,6 +287,72 @@ def test_render_outcome_error_integrity_rejected(exc, label):
     # Unreachable through Broker.dispatch()'s own path (docs/REFERENCE_HARNESS_TARGET_DESIGN.md
     # section 9) -- constructed directly, matching tests/test_harness_outcome.py's own convention.
     assert label in repl.render_outcome_error(exc)
+
+
+# ---- Stage 4B: fixed ASCII banner ------------------------------------------------------------
+
+def test_render_logo_contains_siphonophore():
+    assert "SIPHONOPHORE" in repl.render_logo()
+
+
+def test_render_logo_contains_tagline():
+    assert "mediated agent execution" in repl.render_logo()
+
+
+# ---- Stage 4B: interactive clear-screen decision, presentation-only and portable ---------------
+
+class _FakeStream:
+    def __init__(self, is_tty: bool) -> None:
+        self._is_tty = is_tty
+
+    def isatty(self) -> bool:
+        return self._is_tty
+
+
+def test_should_clear_screen_true_for_interactive_tty():
+    assert repl.should_clear_screen(stream=_FakeStream(True), term="xterm-256color", no_clear=False) is True
+
+
+def test_should_clear_screen_false_when_no_clear_passed():
+    assert repl.should_clear_screen(stream=_FakeStream(True), term="xterm-256color", no_clear=True) is False
+
+
+def test_should_clear_screen_false_for_non_tty_stream():
+    assert repl.should_clear_screen(stream=_FakeStream(False), term="xterm-256color", no_clear=False) is False
+
+
+def test_should_clear_screen_false_for_term_dumb():
+    assert repl.should_clear_screen(stream=_FakeStream(True), term="dumb", no_clear=False) is False
+
+
+def test_should_clear_screen_false_when_stream_has_no_isatty():
+    class _NoIsatty:
+        pass
+
+    assert repl.should_clear_screen(stream=_NoIsatty(), term="xterm-256color", no_clear=False) is False
+
+
+def test_clear_screen_writes_ansi_clear_and_home():
+    buf = io.StringIO()
+    repl.clear_screen(buf)
+    assert buf.getvalue() == "\x1b[2J\x1b[H"
+
+
+def test_no_clear_flag_registered_with_expected_help_text():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    assert '"--no-clear"' in source
+    assert "do not clear the terminal on interactive startup" in source
+
+
+# ---- Stage 4B: startup ordering -- clear, then banner, then capability/session info -------------
+
+def test_main_clears_before_printing_logo_before_capability_banner():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    main_body = source[source.index("def main("):]
+    clear_idx = main_body.index("clear_screen(")
+    logo_idx = main_body.index("render_logo()")
+    capability_idx = main_body.index("render_startup_banner(")
+    assert clear_idx < logo_idx < capability_idx
 
 
 def test_render_outcome_error_unknown_internal_state_is_not_mislabeled():
