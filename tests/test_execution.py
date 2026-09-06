@@ -191,3 +191,101 @@ def test_same_process_backend_requires_artifact_code(executor: Executor):
     decision = executor._gate.submit(intent)
     with pytest.raises(ExecutionError):
         executor.execute(decision, intent)
+
+
+# ---- docs/REFERENCE_HARNESS_V1_HORIZON.md's "next bounded implementation stage": same_process
+# output capture. Each test below is a regression that would have failed against the pre-capture
+# `SameProcessBackend` (its stdout/stderr write directly to the real process streams, and
+# `Effect.detail` was hardcoded to `{}` regardless of what the artifact printed).
+
+def test_same_process_stdout_is_captured_not_leaked_to_the_real_stream(executor: Executor, capsys):
+    """The regression test named directly in the horizon document: a distinctive sentinel must be
+    present in the structured result AND absent from the surrounding stdout stream. `capsys`
+    captures this test process's real `sys.stdout` -- if `SameProcessBackend` ever stopped
+    redirecting it, the sentinel would show up here."""
+    sentinel = "SIPHONOPHORE-STDOUT-SENTINEL-4f7a"
+    intent = Intent(
+        kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
+        artifact_code=f"print({sentinel!r})",
+    )
+    decision = executor._gate.submit(intent)
+    effect = executor.execute(decision, intent)
+
+    assert effect.detail["stdout"] == sentinel + "\n"
+    assert "stderr" not in effect.detail
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+
+
+def test_same_process_stderr_is_captured_not_leaked_to_the_real_stream(executor: Executor, capsys):
+    """Analogous to the stdout test, for stderr -- distinct sentinel, distinct stream."""
+    sentinel = "SIPHONOPHORE-STDERR-SENTINEL-9c2e"
+    intent = Intent(
+        kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
+        artifact_code=f"import sys; print({sentinel!r}, file=sys.stderr)",
+    )
+    decision = executor._gate.submit(intent)
+    effect = executor.execute(decision, intent)
+
+    assert effect.detail["stderr"] == sentinel + "\n"
+    assert "stdout" not in effect.detail
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+
+
+def test_same_process_no_output_produces_empty_detail(executor: Executor):
+    """Ordinary successful code with no output must still work exactly as before this stage --
+    `Effect.detail` stays the empty dict, not `{"stdout": "", "stderr": ""}` noise."""
+    intent = Intent(
+        kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
+        artifact_code="RESULT = 1 + 1",
+    )
+    decision = executor._gate.submit(intent)
+    effect = executor.execute(decision, intent)
+    assert effect.detail == {}
+
+
+def test_same_process_large_output_is_truncated_not_dropped_or_unbounded(executor: Executor):
+    from siphonophore_core.execution import _MAX_CAPTURED_OUTPUT_CHARS
+
+    intent = Intent(
+        kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
+        artifact_code=f"print('A' * {_MAX_CAPTURED_OUTPUT_CHARS * 2})",
+    )
+    decision = executor._gate.submit(intent)
+    effect = executor.execute(decision, intent)
+
+    stdout = effect.detail["stdout"]
+    assert len(stdout) < _MAX_CAPTURED_OUTPUT_CHARS * 2  # not left unbounded
+    assert "truncated" in stdout  # not silently dropped -- an explicit marker is present
+    assert stdout.startswith("A" * 100)  # the retained head is real captured content, not just the marker
+
+
+def test_same_process_artifact_exception_still_propagates_and_produces_no_effect(executor: Executor):
+    """Capturing output must not swallow an artifact's own failure into a successful Effect --
+    the currently-intended failure semantics (the raw exception propagates, unwrapped, exactly as
+    before this stage) are unchanged."""
+    intent = Intent(
+        kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
+        artifact_code="print('before the crash'); raise ValueError('boom')",
+    )
+    decision = executor._gate.submit(intent)
+    with pytest.raises(ValueError, match="boom"):
+        executor.execute(decision, intent)
+
+
+def test_same_process_unicode_output_is_captured_correctly(executor: Executor):
+    """Non-ASCII text must survive capture intact -- exercised because truncation is
+    character-based specifically to avoid corrupting multi-byte sequences (see
+    _truncate_captured_output's own docstring)."""
+    intent = Intent(
+        kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
+        artifact_code="print('日本語 emoji test \U0001F600')",
+    )
+    decision = executor._gate.submit(intent)
+    effect = executor.execute(decision, intent)
+    assert effect.detail["stdout"] == "日本語 emoji test \U0001F600\n"

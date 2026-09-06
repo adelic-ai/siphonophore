@@ -18,7 +18,9 @@ it as a single JSON-encoded argv argument; artifact code targeting those classes
 """
 from __future__ import annotations
 
+import contextlib
 import hmac
+import io
 import json
 import os
 import subprocess
@@ -28,6 +30,30 @@ from abc import ABC, abstractmethod
 from .intent import Effect, Intent
 from .mediation import GateViolation, digest_of
 from .policy import Decision
+
+# Bound on captured same_process stdout/stderr, characters not bytes (truncating on a character
+# boundary avoids splitting a multi-byte UTF-8 sequence, which byte-slicing a `str` cannot do
+# safely). No existing precedent in this codebase to match -- `SeparateProcessBackend` has never
+# bounded `proc.stdout` (docs/REFERENCE_HARNESS_V1_HORIZON.md's own next-stage scope explicitly
+# limits this pass to same_process only, leaving that pre-existing, lower-priority gap open, not
+# regressed). 100,000 characters is a deliberately generous, round bound: large enough that no
+# ordinary diagnostic/inspection output is ever truncated, small enough that a runaway or
+# adversarial artifact cannot grow `Effect.detail` (and everything that holds one -- CognitiveLoop
+# history, this process's own memory) without bound merely because output is now captured instead
+# of streamed directly to a real terminal.
+_MAX_CAPTURED_OUTPUT_CHARS = 100_000
+
+
+def _truncate_captured_output(text: str) -> str:
+    """Truncate `text` to `_MAX_CAPTURED_OUTPUT_CHARS`, appending an explicit, unambiguous marker
+    when truncation actually happened -- never silently drop the tail. A caller (or a human reading
+    `Effect.detail`) must never mistake a truncated capture for the artifact's complete output."""
+    if len(text) <= _MAX_CAPTURED_OUTPUT_CHARS:
+        return text
+    return (
+        text[:_MAX_CAPTURED_OUTPUT_CHARS]
+        + f"\n...[truncated, {len(text)} characters total, {_MAX_CAPTURED_OUTPUT_CHARS} shown]"
+    )
 
 
 class ExecutionError(RuntimeError):
@@ -96,7 +122,43 @@ class SameProcessBackend(ExecutionBackend):
 
     Refuses to run at all while the broker is euid 0 by default (see `allow_root`) -- `exec()`
     here runs with exactly the broker's own privilege, no drop of any kind, so a root broker
-    (needed for the uid_cgroup tiers) would otherwise hand a "low consequence" intent full root."""
+    (needed for the uid_cgroup tiers) would otherwise hand a "low consequence" intent full root.
+
+    **Output capture (docs/REFERENCE_HARNESS_V1_HORIZON.md's "next bounded implementation
+    stage").** `exec()` runs with `sys.stdout`/`sys.stderr` redirected into in-memory buffers for
+    the duration of the call, and whatever the artifact wrote is placed into `Effect.detail`
+    (`"stdout"`/`"stderr"`, present only when non-empty -- an ordinary artifact with no output
+    still produces `detail == {}`, unchanged from before this capture existed) instead of reaching
+    this process's real stdout/stderr streams. This closes a real, previously-reproduced defect: an
+    artifact's `print()`/traceback output used to write directly to whatever real terminal this
+    process happened to share (e.g. a REPL operator's own terminal), unbounded and unmediated,
+    because `same_process` runs in-process and inherited the process's real streams with no
+    redirection at all. Capturing is a presentation/evidence-boundary correction, not a change to
+    isolation or authorization: the code that runs is still exactly what the Decision authorized
+    (digest-checked below by `Executor.execute()`, unchanged) -- what changes is only where its
+    *output* goes afterward, mirroring `SeparateProcessBackend`'s own `Effect.detail["stdout"]`
+    shape (added here as an explicit `"stderr"` key too, which `SeparateProcessBackend` does not
+    currently expose -- see that class's own docstring for why its stderr is discarded on success).
+
+    **Concurrency/reentrancy limitation, disclosed precisely, not silently claimed away:**
+    `contextlib.redirect_stdout`/`redirect_stderr` mutate `sys.stdout`/`sys.stderr` at module/process
+    scope for the duration of the `with` block -- not per-thread, per-task, or per-instance state.
+    Two `SameProcessBackend.run()` calls genuinely running concurrently on different threads of the
+    *same process* would each redirect the same process-global streams, and each would risk
+    observing (or losing) the other's output -- this backend makes no attempt to serialize or
+    thread-isolate that, and nothing in `Executor`, `Broker`, or `CognitiveLoop` today calls `run()`
+    from more than one thread at a time (every existing caller -- `CognitiveLoop.step()`,
+    `Executor.execute()`, every test in this suite -- dispatches strictly one intent at a time,
+    synchronously). This capture mechanism is therefore correct for that existing, single-dispatch-
+    at-a-time usage and is NOT safe for concurrent same_process execution from multiple threads
+    sharing one process -- a future caller introducing real concurrency across `same_process`
+    dispatches on a shared process would need a different mechanism (e.g. per-call thread-local
+    stream substitution is not sufficient either, since `sys.stdout` itself is not thread-local;
+    genuine isolation would need a separate process, which is exactly what `SeparateProcessBackend`
+    already is). This limitation is not new to this stage -- `exec()` sharing the process's real,
+    global streams was already true before capture existed; capturing does not introduce the
+    limitation, it just makes it worth stating explicitly now that streams are being read as well
+    as written."""
 
     def __init__(self, allow_root: bool = False) -> None:
         self._allow_root = allow_root
@@ -107,8 +169,29 @@ class SameProcessBackend(ExecutionBackend):
         if intent.artifact_code is None:
             raise ExecutionError("same_process backend requires intent.artifact_code")
         namespace: dict = {"payload": intent.payload}
-        exec(intent.artifact_code, namespace)  # noqa: S102 -- the whole point: run exactly the authorized code
-        return Effect(intent_id=intent.intent_id, execution_class="same_process", detail={})
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        # No try/except around exec() here, deliberately: an artifact that raises still propagates
+        # exactly as it did before this stage (unwrapped -- same_process never wrapped artifact
+        # exceptions in ExecutionError, unlike separate_process's subprocess.CalledProcessError
+        # handling below; changing that is out of this stage's scope, see the class docstring's
+        # exception-semantics note). Whatever partial output was written into the buffers before an
+        # exception is simply discarded along with the buffers themselves when this method exits
+        # via that exception -- no Effect is constructed on the failure path, so there is nothing
+        # to attach it to; this mirrors the pre-capture behavior of never returning a partial
+        # Effect on failure, at the cost of that partial output no longer being visible anywhere
+        # (previously it would have reached the real terminal before the crash). Not addressed by
+        # this stage -- see docs/REFERENCE_HARNESS_V1_HORIZON.md's own scope boundary.
+        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+            exec(intent.artifact_code, namespace)  # noqa: S102 -- the whole point: run exactly the authorized code
+        detail: dict = {}
+        stdout = stdout_buffer.getvalue()
+        stderr = stderr_buffer.getvalue()
+        if stdout:
+            detail["stdout"] = _truncate_captured_output(stdout)
+        if stderr:
+            detail["stderr"] = _truncate_captured_output(stderr)
+        return Effect(intent_id=intent.intent_id, execution_class="same_process", detail=detail)
 
 
 class SeparateProcessBackend(ExecutionBackend):
