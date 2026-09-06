@@ -46,8 +46,8 @@ from siphonophore_core.authority import Authority
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.composition import ExecutionProfile, portable_profile
 from siphonophore_harness.loop import CognitiveLoop
-from siphonophore_harness.outcome import DispatchResult, OutcomeCategory, classify_outcome
-from siphonophore_harness.prompts import DEFAULT_SYSTEM_PROMPT
+from siphonophore_harness.outcome import DispatchResult, MessageOnlyResult, OutcomeCategory, classify_outcome
+from siphonophore_harness.prompts import build_system_prompt
 
 try:
     from siphonophore_harness.model_anthropic import AnthropicAPIModel
@@ -159,12 +159,16 @@ def render_turn_result(result: DispatchResult) -> str:
     return line
 
 
-def render_turn(result: DispatchResult, *, message: str | None, verbose: bool, raw_completion: object = None) -> str:
+def render_turn(result: DispatchResult | MessageOnlyResult, *, message: str | None, verbose: bool, raw_completion: object = None) -> str:
     """Composes one turn's full default output: Claude's conversational reply (or an explicit
-    no-message placeholder) first, then the compact Siphonophore trace footer -- Claude's answer
-    is what an operator is reading for, the trace is supporting metadata. Verbose raw completion,
-    when requested, stays appended last, unchanged from before."""
-    lines = [message if message else "[no message this turn]", "", render_turn_result(result)]
+    no-message placeholder) first, then -- only for a real dispatched operation -- the compact
+    Siphonophore trace footer. A MessageOnlyResult never had an Intent, Decision, or Effect, so
+    there is nothing truthful to put in a trace footer for it: no execution_class, no intent_id,
+    no "[executed]"/"[...]" label at all. Verbose raw completion, when requested, stays appended
+    last either way, unchanged from before."""
+    lines = [message if message else "[no message this turn]"]
+    if not isinstance(result, MessageOnlyResult):
+        lines += ["", render_turn_result(result)]
     if verbose:
         lines += ["", f"[raw completion]\n  {raw_completion}"]
     return "\n".join(lines)
@@ -233,8 +237,8 @@ def main() -> int:
         print("error: no API key -- pass --api-key or set ANTHROPIC_API_KEY", file=sys.stderr)
         return 1
 
-    model = AnthropicAPIModel(model=args.model, api_key=api_key, system=DEFAULT_SYSTEM_PROMPT)
     profile = portable_profile()
+    model = AnthropicAPIModel(model=args.model, api_key=api_key, system=build_system_prompt(profile))
 
     authority: Authority | None = None
     if args.grant_root_authority:

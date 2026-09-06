@@ -85,6 +85,22 @@ class DispatchResult:
         return self.effect.detail
 
 
+@dataclass(frozen=True)
+class MessageOnlyResult:
+    """What `CognitiveLoop.step()` returns for a turn that requested no operation at all: the
+    model's conversational `message`, and nothing else. There is no Intent, no Decision, no Effect
+    for a turn like this -- `Broker.dispatch()` was never called -- so this type has no
+    `intent_id`, `execution_class`, `decision`, or `detail` field, deliberately, by omission
+    rather than by a null placeholder. A reader must not be able to mistake "no operation was
+    requested" for "an operation was requested and produced empty attribution": the former has no
+    such fields to inspect at all.
+
+    Outside `OutcomeCategory` entirely -- see `classify_outcome()` below, which is never called on
+    one of these."""
+
+    message: str | None
+
+
 class OutcomeCategory(str, Enum):
     """The closed set of outcome categories docs/REFERENCE_HARNESS_TARGET_DESIGN.md section 9
     defines over `Broker.dispatch()`'s possible results. A `str` subclass so a category compares

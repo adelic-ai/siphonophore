@@ -27,9 +27,9 @@ from __future__ import annotations
 from siphonophore_core.authority import Authority
 
 from .broker import Broker
-from .intent_parsing import parse_intent
+from .intent_parsing import parse_turn
 from .model import Model
-from .outcome import DispatchResult
+from .outcome import DispatchResult, MessageOnlyResult
 
 
 class CognitiveLoop:
@@ -41,12 +41,22 @@ class CognitiveLoop:
         self.history: list[dict] = []
         self.last_message: str | None = None
 
-    def step(self, user_message: str) -> DispatchResult:
-        """One turn: append the user's message, get a completion, parse it into an Intent (plus
-        an optional human-facing message, intent_parsing.ParsedTurn), dispatch the Intent through
-        the Broker, and feed the resulting Effect back into history as the next turn's context --
-        so the model sees what actually happened, not merely what its own prior completion claimed
-        it would do.
+    def step(self, user_message: str) -> DispatchResult | MessageOnlyResult:
+        """One turn: append the user's message, get a completion, parse it into a ParsedTurn (an
+        optional human-facing message and an optional Intent, intent_parsing.parse_turn()).
+
+        If no operation was requested (`parsed.intent is None`), Broker.dispatch() is never
+        called -- there is nothing to dispatch -- and this returns a MessageOnlyResult carrying
+        only the message. Otherwise the Intent is dispatched through the Broker exactly as before,
+        and the resulting Effect is fed back into history as the next turn's context -- so the
+        model sees what actually happened, not merely what its own prior completion claimed it
+        would do. Either way, the completion and an honest description of this turn's outcome are
+        recorded in history, so conversational continuity is preserved for message-only turns
+        exactly as it already was for dispatched ones.
+
+        This branch is purely mechanical -- "does an operation exist" -- never "should it": that
+        judgment belongs entirely to the model (via the envelope) and to the parser (via
+        validation), not to this loop.
 
         `self.last_message` is set from the parsed completion before dispatch is attempted, and
         reset to None at the start of every step() -- so it reflects this turn's own message (or
@@ -62,8 +72,12 @@ class CognitiveLoop:
         self.last_message = None
         self.history.append({"role": "user", "content": user_message})
         completion = self._model.complete(self.history)
-        parsed = parse_intent(completion, self._principal_id)
+        parsed = parse_turn(completion, self._principal_id)
         self.last_message = parsed.message
+        if parsed.intent is None:
+            self.history.append({"role": "assistant", "content": completion})
+            self.history.append({"role": "effect", "content": "no operation requested this turn"})
+            return MessageOnlyResult(message=parsed.message)
         effect = self._broker.dispatch(parsed.intent, authority=self._authority)
         self.history.append({"role": "assistant", "content": completion})
         self.history.append({"role": "effect", "content": _describe_effect(effect)})

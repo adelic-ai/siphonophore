@@ -29,7 +29,7 @@ from siphonophore_core.mediation import GateViolation
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.composition import compose_profile, portable_profile
 from siphonophore_harness.intent_parsing import IntentParseError
-from siphonophore_harness.outcome import OutcomeCategory
+from siphonophore_harness.outcome import MessageOnlyResult, OutcomeCategory
 
 
 def _load_repl():
@@ -190,6 +190,33 @@ def test_render_turn_includes_raw_completion_when_verbose():
     assert "[raw completion]" in rendered
     assert "raw model text" in rendered
     assert rendered.index("[executed]") < rendered.index("[raw completion]")  # trace, then verbose detail, last
+
+
+# ---- turn contract: message-only rendering has no execution trace footer at all -------------------
+
+def test_render_turn_of_a_message_only_result_shows_the_message_and_no_trace_footer():
+    result = MessageOnlyResult(message="The capital of Japan is Tokyo.")
+    rendered = repl.render_turn(result, message="The capital of Japan is Tokyo.", verbose=False)
+    assert rendered.strip() == "The capital of Japan is Tokyo."
+    for label in repl._CATEGORY_LABELS.values():
+        assert f"[{label}]" not in rendered
+    assert "intent_id" not in rendered
+    assert "execution_class" not in rendered
+
+
+def test_render_turn_of_a_message_only_result_with_no_message_shows_only_the_placeholder():
+    result = MessageOnlyResult(message=None)
+    rendered = repl.render_turn(result, message=None, verbose=False)
+    assert rendered.strip() == "[no message this turn]"
+
+
+def test_render_turn_of_a_message_only_result_still_shows_raw_completion_when_verbose():
+    result = MessageOnlyResult(message="hello")
+    rendered = repl.render_turn(result, message="hello", verbose=True, raw_completion='{"message": "hello"}')
+    assert "[raw completion]" in rendered
+    assert '{"message": "hello"}' in rendered
+    for label in repl._CATEGORY_LABELS.values():
+        assert f"[{label}]" not in rendered
 
 
 # ---- Stage 4A: optional readline/libedit line-editing degrades gracefully -------------------------
