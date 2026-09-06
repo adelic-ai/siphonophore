@@ -36,6 +36,12 @@ import os
 import sys
 import uuid
 
+try:
+    import readline  # noqa: F401 -- wires stdin history/line-editing into input(); stdlib, POSIX-only
+except ImportError:
+    readline = None  # some minimal/embedded builds lack it -- input() still works, just without
+    # history or arrow-key editing; no custom escape-sequence parsing is added to compensate
+
 from siphonophore_core.authority import Authority
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.composition import ExecutionProfile, portable_profile
@@ -100,13 +106,29 @@ def render_authority_banner(authority: Authority | None) -> str:
 
 
 def render_turn_result(result: DispatchResult) -> str:
-    """Default-visible rendering of a successful dispatch: outcome category, intent_id,
-    execution_class, and concise Effect/Decision detail -- no --verbose needed to see any of it."""
+    """Compact secondary trace footer for a successful dispatch: outcome category,
+    execution_class, intent_id, and concise Effect/Decision detail -- no --verbose needed to see
+    any of it. Effect.detail is a dict (siphonophore_core.intent.Effect) that is often empty on an
+    ordinary successful turn; an empty dict is pure noise here and is omitted, exactly as an absent
+    authority_id/order_id already is -- meaningful non-empty detail is still always shown."""
     label = _CATEGORY_LABELS[classify_outcome(result)]
-    line = f"[{label}] intent_id={result.intent_id} execution_class={result.execution_class}"
+    line = f"  [{label}] execution_class={result.execution_class} intent_id={result.intent_id}"
     if result.decision.authority_id is not None:
         line += f" authority_id={result.decision.authority_id} order_id={result.decision.order_id}"
-    return line + f" detail={result.detail}"
+    if result.detail:
+        line += f" detail={result.detail}"
+    return line
+
+
+def render_turn(result: DispatchResult, *, message: str | None, verbose: bool, raw_completion: object = None) -> str:
+    """Composes one turn's full default output: Claude's conversational reply (or an explicit
+    no-message placeholder) first, then the compact Siphonophore trace footer -- Claude's answer
+    is what an operator is reading for, the trace is supporting metadata. Verbose raw completion,
+    when requested, stays appended last, unchanged from before."""
+    lines = [message if message else "[no message this turn]", "", render_turn_result(result)]
+    if verbose:
+        lines += ["", f"[raw completion]\n  {raw_completion}"]
+    return "\n".join(lines)
 
 
 def render_outcome_error(exc: BaseException) -> str:
@@ -194,18 +216,13 @@ def main() -> int:
         try:
             result = loop.step(user_message)
         except Exception as exc:  # noqa: BLE001 -- a REPL should report and keep going, not crash
-            print(f"{render_outcome_error(exc)}\n")
+            print(f"\n{render_outcome_error(exc)}\n")
             continue
 
-        print(render_turn_result(result))
-        if loop.last_message:
-            print(f"{loop.last_message}\n")
-        else:
-            print("[no message this turn]\n")
-
-        if args.verbose:
-            raw_completion = loop.history[-2]["content"]
-            print(f"[raw completion]\n  {raw_completion}\n")
+        raw_completion = loop.history[-2]["content"] if args.verbose else None
+        print()
+        print(render_turn(result, message=loop.last_message, verbose=args.verbose, raw_completion=raw_completion))
+        print()
 
     return 0
 

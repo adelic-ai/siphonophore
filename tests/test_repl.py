@@ -118,6 +118,107 @@ def test_render_turn_result_shows_authority_context_when_held():
     assert f"order_id={authority.order_id}" in rendered
 
 
+# ---- Stage 4A: empty detail is noise, non-empty detail is meaningful -----------------------------
+
+def test_render_turn_result_omits_empty_detail():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-empty-detail", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    assert result.detail == {}  # confirms this is genuinely the empty-detail case, not incidentally
+    rendered = repl.render_turn_result(result)
+    assert "detail=" not in rendered
+
+
+def test_render_turn_result_shows_non_empty_detail():
+    # separate_process's own backend (execution.py) genuinely populates detail with subprocess
+    # stdout -- using the real path here rather than fabricating an Effect.
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-detail", consequence="high", artifact_code="print('hi')")
+    result = profile.broker.dispatch(intent)
+    assert result.detail  # confirms this really is the non-empty-detail case
+    rendered = repl.render_turn_result(result)
+    assert "detail=" in rendered
+    assert "stdout" in rendered
+
+
+# ---- Stage 4A: normal trace still carries outcome/execution_class/intent_id ----------------------
+
+def test_render_turn_result_always_includes_outcome_execution_class_and_intent_id():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-trace-fields", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    rendered = repl.render_turn_result(result)
+    assert "[executed]" in rendered
+    assert "execution_class=same_process" in rendered
+    assert "intent_id=i-trace-fields" in rendered
+
+
+# ---- Stage 4A: Claude's conversational reply renders before the compact trace ---------------------
+
+def test_render_turn_places_message_before_trace():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-order", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    rendered = repl.render_turn(result, message="The capital of Japan is Tokyo.", verbose=False)
+    assert rendered.index("The capital of Japan is Tokyo.") < rendered.index("[executed]")
+
+
+def test_render_turn_shows_placeholder_when_no_message():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-no-message", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    rendered = repl.render_turn(result, message=None, verbose=False)
+    assert rendered.index("[no message this turn]") < rendered.index("[executed]")
+
+
+def test_render_turn_retains_trace_fields_and_omits_verbose_by_default():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-verbose-off", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    rendered = repl.render_turn(result, message="hi", verbose=False)
+    assert "[raw completion]" not in rendered
+    assert "execution_class=same_process" in rendered
+    assert "intent_id=i-verbose-off" in rendered
+
+
+def test_render_turn_includes_raw_completion_when_verbose():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-verbose-on", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    rendered = repl.render_turn(result, message="hi", verbose=True, raw_completion="raw model text")
+    assert "[raw completion]" in rendered
+    assert "raw model text" in rendered
+    assert rendered.index("[executed]") < rendered.index("[raw completion]")  # trace, then verbose detail, last
+
+
+# ---- Stage 4A: optional readline/libedit line-editing degrades gracefully -------------------------
+
+def test_repl_module_is_importable_without_readline(monkeypatch):
+    """Confirms only that examples/repl.py doesn't hard-depend on readline -- some minimal/embedded
+    Python builds lack it. This does NOT and cannot verify actual macOS terminal history/arrow-key
+    behavior; that remains a real-Mac-terminal empirical check, not something a headless test can
+    honestly establish."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_readline(name, *args, **kwargs):
+        if name == "readline":
+            raise ImportError("simulated: readline unavailable in this build")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_readline)
+    module = _load_repl()
+    assert module.readline is None
+
+
+def test_repl_adds_no_custom_terminal_escape_parsing():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    assert "\x1b[" not in source
+    assert "\\033[" not in source
+    assert "\\x1b[" not in source
+
+
 # ---- outcome/error rendering: classify_outcome() is the sole semantic source ---------------------
 
 def test_render_outcome_error_denied_shows_decision_context():
