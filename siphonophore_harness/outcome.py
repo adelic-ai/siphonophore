@@ -86,19 +86,73 @@ class DispatchResult:
 
 
 @dataclass(frozen=True)
-class MessageOnlyResult:
-    """What `CognitiveLoop.step()` returns for a turn that requested no operation at all: the
-    model's conversational `message`, and nothing else. There is no Intent, no Decision, no Effect
-    for a turn like this -- `Broker.dispatch()` was never called -- so this type has no
-    `intent_id`, `execution_class`, `decision`, or `detail` field, deliberately, by omission
-    rather than by a null placeholder. A reader must not be able to mistake "no operation was
-    requested" for "an operation was requested and produced empty attribution": the former has no
-    such fields to inspect at all.
+class OperationOutcome:
+    """One mediated dispatch attempt's outcome for one cycle of a (possibly multi-cycle)
+    `CognitiveLoop` turn (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md). Built once per cycle from
+    whatever `Broker.dispatch()` returned or raised, after `classify_outcome()` has already placed
+    it into one of the eight closed categories below -- this type never re-derives that
+    classification, it only curates presentation of an already-classified outcome for two
+    different audiences (see `CognitiveLoop`'s own history-construction code for the model-facing
+    cut, and `examples/repl.py` for the operator-facing one).
 
-    Outside `OutcomeCategory` entirely -- see `classify_outcome()` below, which is never called on
-    one of these."""
+    `intent_id` is always the dispatched `Intent`'s own id -- known before `Gate.submit()` is even
+    called (`intent_parsing.py` mints it) -- present for every category, including
+    `authority_rejected`, the one category with no minted `Decision` at all.
+
+    `execution_class` is the `Decision`'s own selected class, present for every category except
+    `authority_rejected` (raised inside `Gate.submit()` before policy is ever consulted, so no
+    `Decision` -- hence no `execution_class` -- exists yet).
+
+    `authority_id`/`order_id` mirror `DecisionProjection`'s own fields, kept here so an operator's
+    trace can show authority context for a continuation-turn operation exactly as
+    `examples/repl.py`'s `render_turn_result()` already could for a single-dispatch turn before
+    continuation existed. Deliberately NOT model-visible -- the model needs to know whether/why an
+    operation succeeded, not which session-level authority backed it (a fact it never chose or
+    supplied); excluded from any text `CognitiveLoop` composes for the next `model.complete()`
+    call.
+
+    `detail` is EXECUTED-only: the `Effect`'s own `detail` dict, unmodified -- already bounded by
+    whatever backend produced it (100,000 characters for `same_process`, per the prior
+    output-capture stage). This is the BACKEND CAPTURE bound; a separate, smaller MODEL-CONTEXT
+    bound is applied only when `CognitiveLoop` composes text for the next `model.complete()` call,
+    never here -- this field is never mutated or re-truncated for that purpose, so operator/
+    `--verbose` presentation always sees the full, backend-capped content.
+
+    `reason` is non-EXECUTED-only: a short, human-readable description of why not, derived from the
+    underlying exception's own message text (already hand-authored, secret-free prose in this
+    codebase) -- never a raw exception object, traceback, `Decision`, HMAC token, or artifact
+    digest."""
+
+    intent_id: str
+    category: "OutcomeCategory"
+    execution_class: str | None
+    authority_id: str | None
+    order_id: str | None
+    detail: dict
+    reason: str | None
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """What `CognitiveLoop.step()` returns for one full user turn
+    (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md), however many mediated operation/result cycles
+    it took to reach a final response. Supersedes the single-cycle `DispatchResult`/
+    `MessageOnlyResult` return shape: `operations` is empty exactly when no operation was ever
+    requested this turn (the old message-only case, now the zero-operation case of this more
+    general shape -- there is no Intent, no Decision, no Effect for a turn like this, so an empty
+    `operations` tuple carries no execution attribution, by omission rather than a null
+    placeholder), and holds one `OperationOutcome` per independently-mediated `Broker.dispatch()`
+    attempt otherwise, in dispatch order.
+
+    `exhausted` is True only when the per-turn operation bound (`CognitiveLoop`'s own
+    `max_operations_per_turn`) ended the turn before the model produced a final message -- the
+    operation that would have exceeded the bound was never dispatched, never mediated; whatever the
+    model said alongside that refused request (if anything) is `message`, shown honestly rather
+    than fabricated or silently dropped."""
 
     message: str | None
+    operations: tuple["OperationOutcome", ...]
+    exhausted: bool
 
 
 class OutcomeCategory(str, Enum):

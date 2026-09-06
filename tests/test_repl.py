@@ -30,7 +30,7 @@ from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.composition import compose_profile, portable_profile
 from siphonophore_harness.intent_parsing import IntentParseError
 from siphonophore_harness.model_anthropic import ModelResponseDiagnostics
-from siphonophore_harness.outcome import MessageOnlyResult, OutcomeCategory
+from siphonophore_harness.outcome import OperationOutcome, OutcomeCategory, TurnResult
 
 
 def _load_repl():
@@ -42,6 +42,23 @@ def _load_repl():
 
 
 repl = _load_repl()
+
+
+def _turn_result_from_dispatch(result, *, message=None, exhausted=False):
+    """Wraps a real, single DispatchResult (from a direct Broker.dispatch() call, the pattern
+    every test in this file already uses) into the TurnResult shape render_turn() now consumes
+    (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) -- a one-operation turn is the smallest,
+    still-real instance of the general multi-cycle shape, not a special case of it."""
+    outcome = OperationOutcome(
+        intent_id=result.intent_id,
+        category=OutcomeCategory.EXECUTED,
+        execution_class=result.execution_class,
+        authority_id=result.decision.authority_id,
+        order_id=result.decision.order_id,
+        detail=result.detail,
+        reason=None,
+    )
+    return TurnResult(message=message, operations=(outcome,), exhausted=exhausted)
 
 
 # ---- category labels: every OutcomeCategory has a distinct rendered label -----------------------
@@ -161,7 +178,8 @@ def test_render_turn_places_message_before_trace():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-order", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
-    rendered = repl.render_turn(result, message="The capital of Japan is Tokyo.", verbose=False)
+    turn_result = _turn_result_from_dispatch(result, message="The capital of Japan is Tokyo.")
+    rendered = repl.render_turn(turn_result, verbose=False)
     assert rendered.index("The capital of Japan is Tokyo.") < rendered.index("[executed]")
 
 
@@ -169,7 +187,8 @@ def test_render_turn_shows_placeholder_when_no_message():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-no-message", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
-    rendered = repl.render_turn(result, message=None, verbose=False)
+    turn_result = _turn_result_from_dispatch(result, message=None)
+    rendered = repl.render_turn(turn_result, verbose=False)
     assert rendered.index("[no message this turn]") < rendered.index("[executed]")
 
 
@@ -177,7 +196,8 @@ def test_render_turn_retains_trace_fields_and_omits_verbose_by_default():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-verbose-off", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
-    rendered = repl.render_turn(result, message="hi", verbose=False)
+    turn_result = _turn_result_from_dispatch(result, message="hi")
+    rendered = repl.render_turn(turn_result, verbose=False)
     assert "[raw completion]" not in rendered
     assert "execution_class=same_process" in rendered
     assert "intent_id=i-verbose-off" in rendered
@@ -187,7 +207,8 @@ def test_render_turn_includes_raw_completion_when_verbose():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-verbose-on", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
-    rendered = repl.render_turn(result, message="hi", verbose=True, raw_completion="raw model text")
+    turn_result = _turn_result_from_dispatch(result, message="hi")
+    rendered = repl.render_turn(turn_result, verbose=True, raw_completion="raw model text")
     assert "[raw completion]" in rendered
     assert "raw model text" in rendered
     assert rendered.index("[executed]") < rendered.index("[raw completion]")  # trace, then verbose detail, last
@@ -196,8 +217,8 @@ def test_render_turn_includes_raw_completion_when_verbose():
 # ---- turn contract: message-only rendering has no execution trace footer at all -------------------
 
 def test_render_turn_of_a_message_only_result_shows_the_message_and_no_trace_footer():
-    result = MessageOnlyResult(message="The capital of Japan is Tokyo.")
-    rendered = repl.render_turn(result, message="The capital of Japan is Tokyo.", verbose=False)
+    turn_result = TurnResult(message="The capital of Japan is Tokyo.", operations=(), exhausted=False)
+    rendered = repl.render_turn(turn_result, verbose=False)
     assert rendered.strip() == "The capital of Japan is Tokyo."
     for label in repl._CATEGORY_LABELS.values():
         assert f"[{label}]" not in rendered
@@ -206,18 +227,65 @@ def test_render_turn_of_a_message_only_result_shows_the_message_and_no_trace_foo
 
 
 def test_render_turn_of_a_message_only_result_with_no_message_shows_only_the_placeholder():
-    result = MessageOnlyResult(message=None)
-    rendered = repl.render_turn(result, message=None, verbose=False)
+    turn_result = TurnResult(message=None, operations=(), exhausted=False)
+    rendered = repl.render_turn(turn_result, verbose=False)
     assert rendered.strip() == "[no message this turn]"
 
 
 def test_render_turn_of_a_message_only_result_still_shows_raw_completion_when_verbose():
-    result = MessageOnlyResult(message="hello")
-    rendered = repl.render_turn(result, message="hello", verbose=True, raw_completion='{"message": "hello"}')
+    turn_result = TurnResult(message="hello", operations=(), exhausted=False)
+    rendered = repl.render_turn(turn_result, verbose=True, raw_completion='{"message": "hello"}')
     assert "[raw completion]" in rendered
     assert '{"message": "hello"}' in rendered
     for label in repl._CATEGORY_LABELS.values():
         assert f"[{label}]" not in rendered
+
+
+# ---- continuation: multiple operations render as multiple compact trace lines, in order -----------
+
+def test_render_turn_of_multiple_operations_shows_one_trace_line_each_in_order():
+    outcome_a = OperationOutcome(
+        intent_id="i-a", category=OutcomeCategory.EXECUTED, execution_class="same_process",
+        authority_id=None, order_id=None, detail={}, reason=None,
+    )
+    outcome_b = OperationOutcome(
+        intent_id="i-b", category=OutcomeCategory.DENIED, execution_class="same_process",
+        authority_id=None, order_id=None, detail={}, reason="intent was not permitted by policy",
+    )
+    turn_result = TurnResult(message="here's what happened", operations=(outcome_a, outcome_b), exhausted=False)
+
+    rendered = repl.render_turn(turn_result, verbose=False)
+
+    assert rendered.index("here's what happened") < rendered.index("i-a") < rendered.index("i-b")
+    assert "[executed]" in rendered
+    assert "[denied by policy]" in rendered
+    assert "reason=intent was not permitted by policy" in rendered
+
+
+def test_render_turn_of_an_exhausted_turn_shows_a_distinct_limit_reached_line():
+    outcome = OperationOutcome(
+        intent_id="i-a", category=OutcomeCategory.EXECUTED, execution_class="same_process",
+        authority_id=None, order_id=None, detail={}, reason=None,
+    )
+    turn_result = TurnResult(message="I tried to do more but hit a limit", operations=(outcome,), exhausted=True)
+
+    rendered = repl.render_turn(turn_result, verbose=False)
+
+    assert "[operation limit reached]" in rendered
+    assert "1 operations attempted this turn" in rendered
+    for label in repl._CATEGORY_LABELS.values():
+        assert f"[operation limit reached]" != f"[{label}]"  # never confusable with a real OutcomeCategory label
+
+
+def test_render_operation_outcome_omits_execution_class_for_authority_rejected():
+    outcome = OperationOutcome(
+        intent_id="i-a", category=OutcomeCategory.AUTHORITY_REJECTED, execution_class=None,
+        authority_id=None, order_id=None, detail={}, reason="authority failed Gate verification",
+    )
+    rendered = repl.render_operation_outcome(outcome)
+    assert "execution_class=" not in rendered
+    assert "[authority rejected]" in rendered
+    assert "reason=authority failed Gate verification" in rendered
 
 
 # ---- Stage 4A: optional readline/libedit line-editing degrades gracefully -------------------------
@@ -409,10 +477,11 @@ def test_render_turn_verbose_includes_diagnostics_when_provided():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-diag", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
+    turn_result = _turn_result_from_dispatch(result, message="hi")
     diagnostics = ModelResponseDiagnostics(
         block_types=("text",), text_block_count=1, total_block_count=1, retained_text_length=9,
     )
-    rendered = repl.render_turn(result, message="hi", verbose=True, raw_completion="raw text", diagnostics=diagnostics)
+    rendered = repl.render_turn(turn_result, verbose=True, raw_completion="raw text", diagnostics=diagnostics)
     assert "[raw completion]" in rendered
     assert "text_block_count=1" in rendered
     assert rendered.index("[executed]") < rendered.index("text_block_count=1") < rendered.index("[raw completion]")
@@ -424,7 +493,8 @@ def test_render_turn_verbose_omits_diagnostics_line_when_none_available():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-nodiag", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
-    rendered = repl.render_turn(result, message="hi", verbose=True, raw_completion="raw text", diagnostics=None)
+    turn_result = _turn_result_from_dispatch(result, message="hi")
+    rendered = repl.render_turn(turn_result, verbose=True, raw_completion="raw text", diagnostics=None)
     assert "[raw completion]" in rendered
     assert "block_types" not in rendered
     assert "text_block_count" not in rendered
@@ -434,10 +504,11 @@ def test_render_turn_normal_mode_never_shows_diagnostics_even_if_provided():
     profile = portable_profile()
     intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-normal-diag", consequence="low", artifact_code="pass")
     result = profile.broker.dispatch(intent)
+    turn_result = _turn_result_from_dispatch(result, message="hi")
     diagnostics = ModelResponseDiagnostics(
         block_types=("text",), text_block_count=1, total_block_count=1, retained_text_length=9,
     )
-    rendered = repl.render_turn(result, message="hi", verbose=False, raw_completion="raw text", diagnostics=diagnostics)
+    rendered = repl.render_turn(turn_result, verbose=False, raw_completion="raw text", diagnostics=diagnostics)
     assert "block_types" not in rendered
     assert "[raw completion]" not in rendered
 

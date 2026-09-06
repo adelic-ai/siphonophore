@@ -62,6 +62,7 @@ from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.broker import Broker
 from siphonophore_harness.loop import CognitiveLoop
 from siphonophore_harness.model import ScriptedModel
+from siphonophore_harness.outcome import OutcomeCategory
 
 
 def _preconditions_met() -> bool:
@@ -163,19 +164,27 @@ def test_direct_dispatch_and_cognitive_loop_reach_the_identical_backend_instance
         assert direct_marker in _independent_logs(pods[0]["metadata"]["name"])
 
         # -- CognitiveLoop, same broker/backend instance --
+        # Two scripted completions: the turn-envelope contract (61fbdcf) plus operation
+        # continuation (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) mean an EXECUTED operation
+        # is now recoverable -- the loop calls the model a second time with the result, so a
+        # second, message-only completion is required for step() to reach a final TurnResult.
         loop_marker = f"marker-{uuid.uuid4().hex[:8]}"
         completion = json.dumps({
-            "kind": "run_artifact", "consequence": "k8s",
-            "artifact_code": f"import json; print(json.dumps({{'marker': {loop_marker!r}}}))",
+            "operation": {
+                "kind": "run_artifact", "consequence": "k8s",
+                "artifact_code": f"import json; print(json.dumps({{'marker': {loop_marker!r}}}))",
+            }
         })
-        loop = CognitiveLoop(model=ScriptedModel([completion]), broker=broker, principal_id="agent-a")
-        loop_effect = loop.step("run the k8s thing")
-        loop_intent_id = loop_effect.intent_id  # parse_intent() always mints this fresh
+        final_completion = json.dumps({"message": "done"})
+        loop = CognitiveLoop(model=ScriptedModel([completion, final_completion]), broker=broker, principal_id="agent-a")
+        loop_result = loop.step("run the k8s thing")
+        loop_operation = loop_result.operations[0]
+        loop_intent_id = loop_operation.intent_id  # parse_intent() always mints this fresh
 
         # Internal: the SAME counting backend instance, now called a second time.
-        assert loop_effect.execution_class == "k8s_pod"
+        assert loop_operation.execution_class == "k8s_pod"
         assert counting.call_count == 2
-        assert loop_effect.detail["phase"] == "Succeeded"
+        assert loop_operation.detail["phase"] == "Succeeded"
 
         # External.
         loop_pods = _independent_pods_for_intent(loop_intent_id)
@@ -221,24 +230,29 @@ def test_deny_via_direct_dispatch_never_touches_kubernetes():
 
 def test_deny_via_cognitive_loop_never_touches_kubernetes():
     """Weaker external evidence than test_deny_via_direct_dispatch_never_touches_kubernetes,
-    deliberately: parse_intent() mints intent_id internally (uuid.uuid4()) and CognitiveLoop.step()
-    never exposes it when GateViolation propagates before an Effect exists, so there is no
-    intent-id label to query by. The before/after total-managed-Pod-count check below is the
-    strongest available external signal, not a shortcut chosen for convenience -- it depends on
-    nothing else changing the managed-Pod population between the two count calls, which is why
-    delete_labeled_pods() (used by every other test in this file for cleanup) blocks until
-    deletion actually completes rather than firing-and-forgetting."""
+    deliberately: parse_intent() mints intent_id internally (uuid.uuid4()) and this test does not
+    key off it, so its external check is a before/after total-managed-Pod-count invariant, not a
+    label-specific absence proof. Real evidence, not vacuous, but named as weaker here rather than
+    left to look equivalent to the direct-dispatch case.
+
+    A DENY is now a recoverable continuation outcome (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md),
+    not a raised exception -- CognitiveLoop.step() calls the model a second time with the result,
+    so a second, message-only completion is required, and the assertion moves from
+    `pytest.raises(GateViolation)` to checking `result.operations[0].category`. This does not
+    weaken what's being proven: the backend call-counter and the external Pod-count invariant below
+    are unchanged and are the actual evidence Kubernetes was never touched."""
     gate = Gate(ConsequencePolicy(mapping={"k8s": "k8s_pod"}, allowed_kinds=("run_artifact",)))
     counting = _CountingK8sPodBackend(K8sPodBackend())
     executor = Executor(gate, backends={"k8s_pod": counting})
     broker = Broker(gate=gate, executor=executor)
 
-    completion = json.dumps({"kind": "write_file", "consequence": "k8s"})
-    loop = CognitiveLoop(model=ScriptedModel([completion]), broker=broker, principal_id="agent-a")
+    completion = json.dumps({"operation": {"kind": "write_file", "consequence": "k8s", "artifact_code": "pass"}})
+    final_completion = json.dumps({"message": "that wasn't allowed"})
+    loop = CognitiveLoop(model=ScriptedModel([completion, final_completion]), broker=broker, principal_id="agent-a")
 
     before = _independent_managed_pod_count()
-    with pytest.raises(GateViolation):
-        loop.step("try something outside what's allowed")
+    result = loop.step("try something outside what's allowed")
 
+    assert result.operations[0].category == OutcomeCategory.DENIED
     assert counting.call_count == 0
     assert _independent_managed_pod_count() == before

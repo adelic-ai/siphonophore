@@ -3,10 +3,12 @@
 
 The first genuine end-to-end validation of siphonophore-harness: does the loop survive contact
 with actual model output, not just ScriptedModel's deterministic text? Run this yourself and type
-messages. By default this prints, every turn: the outcome category, intent_id, execution_class,
-and (if the model said anything) its conversational text -- pass --verbose to additionally see the
-raw completion, useful while examining how the mediation actually behaves rather than just
-chatting.
+messages. One user turn may involve zero or more bounded, independently mediated operations before
+the model's final answer (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) -- by default this prints
+the model's final conversational text, then one compact trace line per operation actually
+dispatched this turn (outcome category, intent_id, execution_class); a turn that requested no
+operation shows no trace at all. Pass --verbose to additionally see each cycle's raw completion,
+useful while examining how the mediation actually behaves rather than just chatting.
 
 Setup:
     cd /path/to/siphonophore
@@ -24,10 +26,11 @@ separate_process only -- no uid_cgroup backend registered, so this runs anywhere
 required. artifact_code the model writes runs for real, in this process or a real subprocess,
 exactly as the profile's backends do it.
 
-This file is presentation only: it renders the structured DispatchResult/outcome-category surface
-siphonophore_harness.outcome and siphonophore_harness.composition already provide. It mints no
-Decision, classifies nothing by exception message text, and adds no mediation logic of its own --
-see those modules for the actual semantics.
+This file is presentation only: it renders the structured TurnResult/OperationOutcome/
+outcome-category surface siphonophore_harness.outcome and siphonophore_harness.composition already
+provide. It mints no Decision, classifies nothing by exception message text, and adds no mediation
+or continuation logic of its own -- see those modules, and siphonophore_harness.loop, for the
+actual semantics.
 """
 from __future__ import annotations
 
@@ -46,7 +49,7 @@ from siphonophore_core.authority import Authority
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.composition import ExecutionProfile, portable_profile
 from siphonophore_harness.loop import CognitiveLoop
-from siphonophore_harness.outcome import DispatchResult, MessageOnlyResult, OutcomeCategory, classify_outcome
+from siphonophore_harness.outcome import DispatchResult, OperationOutcome, OutcomeCategory, TurnResult, classify_outcome
 from siphonophore_harness.prompts import build_system_prompt
 
 try:
@@ -145,11 +148,17 @@ def render_authority_banner(authority: Authority | None) -> str:
 
 
 def render_turn_result(result: DispatchResult) -> str:
-    """Compact secondary trace footer for a successful dispatch: outcome category,
-    execution_class, intent_id, and concise Effect/Decision detail -- no --verbose needed to see
-    any of it. Effect.detail is a dict (siphonophore_core.intent.Effect) that is often empty on an
-    ordinary successful turn; an empty dict is pure noise here and is omitted, exactly as an absent
-    authority_id/order_id already is -- meaningful non-empty detail is still always shown."""
+    """Compact secondary trace footer for a single, already-successful DispatchResult: outcome
+    category, execution_class, intent_id, and concise Effect/Decision detail -- no --verbose needed
+    to see any of it. Effect.detail is a dict (siphonophore_core.intent.Effect) that is often empty
+    on an ordinary successful turn; an empty dict is pure noise here and is omitted, exactly as an
+    absent authority_id/order_id already is -- meaningful non-empty detail is still always shown.
+
+    Kept for any caller reaching Broker.dispatch() directly (a DispatchResult is a real, public
+    return type independent of CognitiveLoop) -- main()'s own rendering path uses
+    render_operation_outcome() below instead, since a CognitiveLoop turn may now carry zero, one,
+    or several already-classified OperationOutcome entries rather than a single bare
+    DispatchResult (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md)."""
     label = _CATEGORY_LABELS[classify_outcome(result)]
     line = f"  [{label}] execution_class={result.execution_class} intent_id={result.intent_id}"
     if result.decision.authority_id is not None:
@@ -157,6 +166,31 @@ def render_turn_result(result: DispatchResult) -> str:
     if result.detail:
         line += f" detail={result.detail}"
     return line
+
+
+def render_operation_outcome(outcome: OperationOutcome) -> str:
+    """The multi-cycle counterpart of render_turn_result() above: renders one already-classified
+    OperationOutcome (one independently-mediated dispatch cycle of a possibly multi-cycle
+    CognitiveLoop turn) in the same compact, one-line-per-operation shape. Reads outcome.category
+    directly rather than calling classify_outcome() again -- an OperationOutcome is already the
+    result of that classification (siphonophore_harness/loop.py), never re-derived here.
+
+    execution_class is omitted (never shown as a fabricated "None") for authority_rejected, the one
+    category with no minted Decision at all. reason -- a short, curated description of why a
+    non-executed outcome resulted -- is shown only when there is one; a successful (EXECUTED)
+    outcome never carries a reason, matching OperationOutcome's own field semantics."""
+    label = _CATEGORY_LABELS[outcome.category]
+    parts = [f"  [{label}]"]
+    if outcome.execution_class is not None:
+        parts.append(f"execution_class={outcome.execution_class}")
+    parts.append(f"intent_id={outcome.intent_id}")
+    if outcome.authority_id is not None:
+        parts.append(f"authority_id={outcome.authority_id} order_id={outcome.order_id}")
+    if outcome.detail:
+        parts.append(f"detail={outcome.detail}")
+    if outcome.reason is not None:
+        parts.append(f"reason={outcome.reason}")
+    return " ".join(parts)
 
 
 def render_model_diagnostics(diagnostics: object) -> str:
@@ -173,24 +207,38 @@ def render_model_diagnostics(diagnostics: object) -> str:
 
 
 def render_turn(
-    result: DispatchResult | MessageOnlyResult,
+    result: TurnResult,
     *,
-    message: str | None,
     verbose: bool,
     raw_completion: object = None,
     diagnostics: object = None,
 ) -> str:
-    """Composes one turn's full default output: Claude's conversational reply (or an explicit
-    no-message placeholder) first, then -- only for a real dispatched operation -- the compact
-    Siphonophore trace footer. A MessageOnlyResult never had an Intent, Decision, or Effect, so
-    there is nothing truthful to put in a trace footer for it: no execution_class, no intent_id,
-    no "[executed]"/"[...]" label at all. Verbose raw completion, when requested, stays appended
-    last either way, unchanged from before. `diagnostics` (a model_anthropic.ModelResponseDiagnostics,
-    or None when the driving Model doesn't provide one, e.g. ScriptedModel) renders just ahead of
-    the raw completion under --verbose only; normal-mode output is unaffected either way."""
-    lines = [message if message else "[no message this turn]"]
-    if not isinstance(result, MessageOnlyResult):
-        lines += ["", render_turn_result(result)]
+    """Composes one turn's full default output: the model's final conversational reply (or an
+    explicit no-message placeholder) first, then -- only for a turn that actually requested at
+    least one operation -- one compact trace line per independently-mediated cycle, in dispatch
+    order (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md's Presentation Semantics). A turn that
+    never requested an operation (`result.operations == ()`) has nothing truthful to put in a trace
+    footer: no execution_class, no intent_id, no "[executed]"/"[...]" label at all -- unchanged
+    from the message-only behavior this generalizes.
+
+    `result.message` is deliberately the turn's FINAL message only -- whatever an intermediate
+    cycle said before requesting an operation (e.g. "I'll inspect that now") is not shown here by
+    default, so it cannot visually compete with the answer; it remains available under --verbose
+    via each cycle's own raw completion in history. `result.exhausted` adds one final, distinctly-
+    worded line (never an OutcomeCategory label, since it is a harness/session policy decision, not
+    a Broker.dispatch() outcome) when the per-turn operation bound ended the turn before a final
+    message was produced.
+
+    Verbose raw completion, when requested, stays appended last either way, unchanged from before.
+    `diagnostics` (a model_anthropic.ModelResponseDiagnostics, or None when the driving Model
+    doesn't provide one, e.g. ScriptedModel) renders just ahead of the raw completion under
+    --verbose only; normal-mode output is unaffected either way."""
+    lines = [result.message if result.message else "[no message this turn]"]
+    if result.operations:
+        lines.append("")
+        lines.extend(render_operation_outcome(outcome) for outcome in result.operations)
+    if result.exhausted:
+        lines.append(f"  [operation limit reached] {len(result.operations)} operations attempted this turn")
     if verbose:
         lines.append("")
         if diagnostics is not None:
@@ -318,10 +366,10 @@ def main() -> int:
             print(f"\n{render_outcome_error(exc, verbose=args.verbose, raw_completion=error_raw_completion, diagnostics=error_diagnostics)}\n")
             continue
 
-        raw_completion = loop.history[-2]["content"] if args.verbose else None
+        raw_completion = loop.last_completion if args.verbose else None
         diagnostics = loop.last_diagnostics if args.verbose else None
         print()
-        print(render_turn(result, message=loop.last_message, verbose=args.verbose, raw_completion=raw_completion, diagnostics=diagnostics))
+        print(render_turn(result, verbose=args.verbose, raw_completion=raw_completion, diagnostics=diagnostics))
         print()
 
     return 0

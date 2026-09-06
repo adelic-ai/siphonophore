@@ -48,9 +48,14 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     broker.dispatch(authority=...), which already independently re-verifies it. Holding one lets
     a loop exercise authority given to it; it does not let the loop derive or grant authority
     itself (that needs a Gate reference, which this signature still excludes), and it does not add
-    a second path to an effect."""
+    a second path to an effect.
+
+    `max_operations_per_turn` (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) is likewise allowed:
+    a plain integer this class compares against a running count before ever calling
+    broker.dispatch() -- not a capability, not something the model's completion can name or
+    influence, and not a second path to an effect either."""
     import inspect
 
     sig = inspect.signature(loop.CognitiveLoop.__init__)
     param_names = set(sig.parameters) - {"self"}
-    assert param_names == {"model", "broker", "principal_id", "authority"}
+    assert param_names == {"model", "broker", "principal_id", "authority", "max_operations_per_turn"}

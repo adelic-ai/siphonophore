@@ -51,6 +51,7 @@ from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.broker import Broker
 from siphonophore_harness.loop import CognitiveLoop
 from siphonophore_harness.model import ScriptedModel
+from siphonophore_harness.outcome import OutcomeCategory
 
 pytestmark = pytest.mark.linux_root_only
 
@@ -295,24 +296,37 @@ def test_two_real_cognitive_loops_agent_a_delegates_to_agent_b(world_writable_ou
     order = gate.issue_order("order-multiagent-001", "operator:ops-alice", frozenset({"run_artifact"}), max_delegation_depth=2)
     authority_a = gate.grant_root_authority(order, principal_id="agent-a")
 
+    # Nested {"operation": {...}} envelope (61fbdcf) plus a second, message-only completion: an
+    # EXECUTED operation is now a recoverable continuation input
+    # (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md), so step() calls the model again with the
+    # result before returning a final TurnResult.
     loop_a_completion = json.dumps({
-        "kind": "run_artifact", "consequence": "low", "artifact_code": "print('agent A did its own part')",
+        "operation": {"kind": "run_artifact", "consequence": "low", "artifact_code": "print('agent A did its own part')"},
     })
-    loop_a = CognitiveLoop(model=ScriptedModel([loop_a_completion]), broker=broker, principal_id="agent-a", authority=authority_a)
-    effect_a = loop_a.step("do your own part of the task")
-    assert effect_a.execution_class == "same_process"
+    loop_a = CognitiveLoop(
+        model=ScriptedModel([loop_a_completion, json.dumps({"message": "done"})]),
+        broker=broker, principal_id="agent-a", authority=authority_a,
+    )
+    result_a = loop_a.step("do your own part of the task")
+    assert result_a.operations[0].execution_class == "same_process"
 
     authority_b = gate.delegate(authority_a, to_principal_id="agent-a.sub-agent-b")
     loop_b_completion = json.dumps({
-        "kind": "run_artifact", "consequence": "privileged",
-        "payload": {"outdir": str(world_writable_outdir)}, "artifact_code": _AGENT_B_CODE,
+        "operation": {
+            "kind": "run_artifact", "consequence": "privileged",
+            "payload": {"outdir": str(world_writable_outdir)}, "artifact_code": _AGENT_B_CODE,
+        }
     })
-    loop_b = CognitiveLoop(model=ScriptedModel([loop_b_completion]), broker=broker, principal_id="agent-a.sub-agent-b", authority=authority_b)
+    loop_b = CognitiveLoop(
+        model=ScriptedModel([loop_b_completion, json.dumps({"message": "done"})]),
+        broker=broker, principal_id="agent-a.sub-agent-b", authority=authority_b,
+    )
 
     try:
-        effect_b = loop_b.step("do the delegated subtask")
-        assert effect_b.execution_class == "uid_cgroup_checkin"
-        obs = effect_b.detail["observations"]
+        result_b = loop_b.step("do the delegated subtask")
+        operation_b = result_b.operations[0]
+        assert operation_b.execution_class == "uid_cgroup_checkin"
+        obs = operation_b.detail["observations"]
         assert obs["checkin"]["verified"] is True
         assert obs["reconciliation"]["b_did_this.txt"]["value"] == "corroborated"
     finally:
@@ -331,14 +345,25 @@ def test_second_loop_cannot_exercise_outside_its_delegated_scope_via_a_real_comp
 
     order = gate.issue_order("order-multiagent-002", "operator:ops-alice", frozenset({"run_artifact"}), max_delegation_depth=1)
     authority_a = gate.grant_root_authority(order, principal_id="agent-a")
-    loop_a = CognitiveLoop(model=ScriptedModel([json.dumps({"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"})]),
-                            broker=broker, principal_id="agent-a", authority=authority_a)
+    loop_a = CognitiveLoop(
+        model=ScriptedModel([
+            json.dumps({"operation": {"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"}}),
+            json.dumps({"message": "done"}),
+        ]),
+        broker=broker, principal_id="agent-a", authority=authority_a,
+    )
     loop_a.step("agent A's own ordinary turn")
 
     authority_b = gate.delegate(authority_a, to_principal_id="agent-a.sub-agent-b")
-    out_of_scope_completion = json.dumps({"kind": "write_file", "consequence": "low", "artifact_code": "pass"})
-    loop_b = CognitiveLoop(model=ScriptedModel([out_of_scope_completion]), broker=broker,
-                            principal_id="agent-a.sub-agent-b", authority=authority_b)
+    # A scope violation folds into `permitted=False` alongside the ordinary policy result
+    # (mediation.py) -- a real, signed DENY, not a pre-Decision refusal -- and DENY is now a
+    # recoverable continuation outcome (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md), not a
+    # raised exception, so a second, message-only completion is required.
+    out_of_scope_completion = json.dumps({"operation": {"kind": "write_file", "consequence": "low", "artifact_code": "pass"}})
+    loop_b = CognitiveLoop(
+        model=ScriptedModel([out_of_scope_completion, json.dumps({"message": "not allowed"})]),
+        broker=broker, principal_id="agent-a.sub-agent-b", authority=authority_b,
+    )
 
-    with pytest.raises(GateViolation):
-        loop_b.step("try something agent B was never delegated")
+    result_b = loop_b.step("try something agent B was never delegated")
+    assert result_b.operations[0].category == OutcomeCategory.DENIED
