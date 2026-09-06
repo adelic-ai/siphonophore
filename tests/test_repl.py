@@ -29,6 +29,7 @@ from siphonophore_core.mediation import GateViolation
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.composition import compose_profile, portable_profile
 from siphonophore_harness.intent_parsing import IntentParseError
+from siphonophore_harness.model_anthropic import ModelResponseDiagnostics
 from siphonophore_harness.outcome import MessageOnlyResult, OutcomeCategory
 
 
@@ -380,6 +381,120 @@ def test_main_clears_before_printing_logo_before_capability_banner():
     logo_idx = main_body.index("render_logo()")
     capability_idx = main_body.index("render_startup_banner(")
     assert clear_idx < logo_idx < capability_idx
+
+
+# ---- model-boundary observability: diagnostics summary rendering ---------------------------------
+
+def test_render_model_diagnostics_shows_block_types_and_counts():
+    diagnostics = ModelResponseDiagnostics(
+        block_types=("thinking", "text"), text_block_count=1, total_block_count=2, retained_text_length=247,
+    )
+    rendered = repl.render_model_diagnostics(diagnostics)
+    assert "['thinking', 'text']" in rendered
+    assert "text_block_count=1" in rendered
+    assert "retained_text_length=247" in rendered
+
+
+def test_render_model_diagnostics_never_exposes_api_key():
+    diagnostics = ModelResponseDiagnostics(
+        block_types=("text",), text_block_count=1, total_block_count=1, retained_text_length=5,
+    )
+    rendered = repl.render_model_diagnostics(diagnostics)
+    assert "sk-" not in rendered
+
+
+# ---- Stage: verbose successful-turn output carries diagnostics alongside raw completion ----------
+
+def test_render_turn_verbose_includes_diagnostics_when_provided():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-diag", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    diagnostics = ModelResponseDiagnostics(
+        block_types=("text",), text_block_count=1, total_block_count=1, retained_text_length=9,
+    )
+    rendered = repl.render_turn(result, message="hi", verbose=True, raw_completion="raw text", diagnostics=diagnostics)
+    assert "[raw completion]" in rendered
+    assert "text_block_count=1" in rendered
+    assert rendered.index("[executed]") < rendered.index("text_block_count=1") < rendered.index("[raw completion]")
+
+
+def test_render_turn_verbose_omits_diagnostics_line_when_none_available():
+    """ScriptedModel-backed turns (no diagnostics available) must not gain a fabricated diagnostics
+    line -- verbose output degrades to exactly what it already showed before this stage."""
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-nodiag", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    rendered = repl.render_turn(result, message="hi", verbose=True, raw_completion="raw text", diagnostics=None)
+    assert "[raw completion]" in rendered
+    assert "block_types" not in rendered
+    assert "text_block_count" not in rendered
+
+
+def test_render_turn_normal_mode_never_shows_diagnostics_even_if_provided():
+    profile = portable_profile()
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-normal-diag", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    diagnostics = ModelResponseDiagnostics(
+        block_types=("text",), text_block_count=1, total_block_count=1, retained_text_length=9,
+    )
+    rendered = repl.render_turn(result, message="hi", verbose=False, raw_completion="raw text", diagnostics=diagnostics)
+    assert "block_types" not in rendered
+    assert "[raw completion]" not in rendered
+
+
+# ---- Stage: failed-parse visibility -- verbose mode exposes diagnostics + raw retained completion -
+
+def test_render_outcome_error_normal_mode_stays_concise_even_with_diagnostics_available():
+    exc = IntentParseError("completion is not valid JSON: Expecting value: line 1 column 1 (char 0)")
+    diagnostics = ModelResponseDiagnostics(
+        block_types=("thinking",), text_block_count=0, total_block_count=1, retained_text_length=0,
+    )
+    rendered = repl.render_outcome_error(exc, verbose=False, raw_completion="", diagnostics=diagnostics)
+    assert "[input rejected]" in rendered
+    assert "block_types" not in rendered
+    assert "[raw completion]" not in rendered
+
+
+def test_render_outcome_error_verbose_shows_diagnostics_and_raw_completion():
+    exc = IntentParseError("completion is not valid JSON: Expecting value: line 1 column 1 (char 0)")
+    diagnostics = ModelResponseDiagnostics(
+        block_types=("thinking",), text_block_count=0, total_block_count=1, retained_text_length=0,
+    )
+    rendered = repl.render_outcome_error(exc, verbose=True, raw_completion="", diagnostics=diagnostics)
+    assert "[input rejected]" in rendered
+    assert "text_block_count=0" in rendered
+    assert "retained_text_length=0" in rendered
+    assert "[raw completion]" in rendered
+
+
+def test_render_outcome_error_verbose_shows_raw_completion_even_without_diagnostics():
+    """A parse failure driven by ScriptedModel (no diagnostics available) must still surface the
+    raw retained completion under --verbose -- diagnostics are additive, not a prerequisite."""
+    exc = IntentParseError("completion is not valid JSON: Expecting value: line 1 column 1 (char 0)")
+    rendered = repl.render_outcome_error(exc, verbose=True, raw_completion="not json at all", diagnostics=None)
+    assert "[input rejected]" in rendered
+    assert "not json at all" in rendered
+    assert "block_types" not in rendered
+
+
+def test_render_outcome_error_default_verbose_false_is_unchanged():
+    """Existing callers (none of the other render_outcome_error tests in this file pass verbose=)
+    must see byte-for-byte the same concise rendering as before this stage."""
+    exc = IntentParseError("completion is not valid JSON")
+    assert repl.render_outcome_error(exc) == repl.render_outcome_error(exc, verbose=False)
+
+
+# ---- Stage: startup text no longer claims every message reaches parse_intent -> Gate -> Executor -
+
+def test_startup_text_does_not_claim_every_message_reaches_parse_intent_and_gate():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    assert "parse_intent -> Gate -> Executor" not in source
+
+
+def test_startup_text_distinguishes_model_turns_from_mediated_operations():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    assert "Every message becomes a model turn" in source
+    assert "Gate -> Executor" in source
 
 
 def test_render_outcome_error_unknown_internal_state_is_not_mislabeled():

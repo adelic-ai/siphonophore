@@ -159,39 +159,83 @@ def render_turn_result(result: DispatchResult) -> str:
     return line
 
 
-def render_turn(result: DispatchResult | MessageOnlyResult, *, message: str | None, verbose: bool, raw_completion: object = None) -> str:
+def render_model_diagnostics(diagnostics: object) -> str:
+    """Compact, non-sensitive summary of one AnthropicAPIModel.complete() call's response shape
+    (model_anthropic.ModelResponseDiagnostics) -- block types as Anthropic returned them, before
+    text-block filtering, plus how much text survived that filtering. Never shown outside
+    --verbose; never derived from or containing the raw completion, an API key, or any other
+    SDK/request internals."""
+    return (
+        f"[model response] block_types={list(diagnostics.block_types)} "
+        f"text_block_count={diagnostics.text_block_count} "
+        f"retained_text_length={diagnostics.retained_text_length}"
+    )
+
+
+def render_turn(
+    result: DispatchResult | MessageOnlyResult,
+    *,
+    message: str | None,
+    verbose: bool,
+    raw_completion: object = None,
+    diagnostics: object = None,
+) -> str:
     """Composes one turn's full default output: Claude's conversational reply (or an explicit
     no-message placeholder) first, then -- only for a real dispatched operation -- the compact
     Siphonophore trace footer. A MessageOnlyResult never had an Intent, Decision, or Effect, so
     there is nothing truthful to put in a trace footer for it: no execution_class, no intent_id,
     no "[executed]"/"[...]" label at all. Verbose raw completion, when requested, stays appended
-    last either way, unchanged from before."""
+    last either way, unchanged from before. `diagnostics` (a model_anthropic.ModelResponseDiagnostics,
+    or None when the driving Model doesn't provide one, e.g. ScriptedModel) renders just ahead of
+    the raw completion under --verbose only; normal-mode output is unaffected either way."""
     lines = [message if message else "[no message this turn]"]
     if not isinstance(result, MessageOnlyResult):
         lines += ["", render_turn_result(result)]
     if verbose:
-        lines += ["", f"[raw completion]\n  {raw_completion}"]
+        lines.append("")
+        if diagnostics is not None:
+            lines.append(render_model_diagnostics(diagnostics))
+        lines.append(f"[raw completion]\n  {raw_completion}")
     return "\n".join(lines)
 
 
-def render_outcome_error(exc: BaseException) -> str:
+def render_outcome_error(
+    exc: BaseException,
+    *,
+    verbose: bool = False,
+    raw_completion: object = None,
+    diagnostics: object = None,
+) -> str:
     """Renders a refused/failed dispatch using classify_outcome() as the sole semantic source --
     never exception message text. Attaches the curated DecisionProjection's safe fields
     (execution_class, authority_id, order_id) when Broker actually minted a Decision before the
     refusal; a pre-Decision refusal (e.g. authority_rejected) renders with no fabricated Decision
     context. An exception classify_outcome() cannot place in the closed category set is shown as an
-    explicit unknown/internal state, not silently mislabeled."""
+    explicit unknown/internal state, not silently mislabeled.
+
+    Normal mode (verbose=False, the default) is exactly the concise operator error this always
+    was -- unchanged. --verbose additionally appends this turn's model-response diagnostics (when
+    available) and its raw retained completion (when available), the same evidence a successful
+    turn's --verbose output already shows -- so an operator seeing a parse failure can tell, without
+    guessing, whether Claude returned non-JSON prose, an empty/non-text response, or something
+    else, instead of only ever seeing json.JSONDecodeError's own generic message."""
     try:
         category = classify_outcome(exc)
     except ValueError:
-        return f"[unknown/internal error] {type(exc).__name__}: {exc}"
-    lines = [f"[{_CATEGORY_LABELS[category]}] {exc}"]
-    decision = getattr(exc, "decision", None)
-    if decision is not None:
-        detail = f"  execution_class={decision.execution_class}"
-        if decision.authority_id is not None:
-            detail += f" authority_id={decision.authority_id} order_id={decision.order_id}"
-        lines.append(detail)
+        lines = [f"[unknown/internal error] {type(exc).__name__}: {exc}"]
+    else:
+        lines = [f"[{_CATEGORY_LABELS[category]}] {exc}"]
+        decision = getattr(exc, "decision", None)
+        if decision is not None:
+            detail = f"  execution_class={decision.execution_class}"
+            if decision.authority_id is not None:
+                detail += f" authority_id={decision.authority_id} order_id={decision.order_id}"
+            lines.append(detail)
+    if verbose:
+        lines.append("")
+        if diagnostics is not None:
+            lines.append(render_model_diagnostics(diagnostics))
+        lines.append(f"[raw completion]\n  {raw_completion}")
     return "\n".join(lines)
 
 
@@ -252,7 +296,7 @@ def main() -> int:
     print(render_logo())
     print()
     print(render_startup_banner(profile, model_id=args.model, principal_id=args.principal_id, authority=authority))
-    print("Every message you type becomes a real turn: real model call -> parse_intent -> Gate -> Executor.")
+    print("Every message becomes a model turn. Requested operations are mediated through Gate -> Executor.")
     print("Type 'exit' or Ctrl-D to quit.\n")
 
     while True:
@@ -269,12 +313,15 @@ def main() -> int:
         try:
             result = loop.step(user_message)
         except Exception as exc:  # noqa: BLE001 -- a REPL should report and keep going, not crash
-            print(f"\n{render_outcome_error(exc)}\n")
+            error_raw_completion = loop.last_completion if args.verbose else None
+            error_diagnostics = loop.last_diagnostics if args.verbose else None
+            print(f"\n{render_outcome_error(exc, verbose=args.verbose, raw_completion=error_raw_completion, diagnostics=error_diagnostics)}\n")
             continue
 
         raw_completion = loop.history[-2]["content"] if args.verbose else None
+        diagnostics = loop.last_diagnostics if args.verbose else None
         print()
-        print(render_turn(result, message=loop.last_message, verbose=args.verbose, raw_completion=raw_completion))
+        print(render_turn(result, message=loop.last_message, verbose=args.verbose, raw_completion=raw_completion, diagnostics=diagnostics))
         print()
 
     return 0

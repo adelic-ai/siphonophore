@@ -42,15 +42,40 @@ driving retries after a failed step() needs to account for it.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 import anthropic
 
 from .model import Model
 
 
+@dataclass(frozen=True)
+class ModelResponseDiagnostics:
+    """Structural facts about one Anthropic response's content blocks, captured before
+    `complete()` filters them down to the retained text it returns. Exists so that a downstream
+    parse failure -- which happens after `complete()` has already returned -- doesn't erase the
+    only evidence of what the response actually contained: block_types is recorded from
+    `response.content` before any filtering, not reconstructed afterward from the (possibly
+    empty) retained text.
+
+    Deliberately excludes anything else about the SDK response object: no id, no usage/billing
+    metadata, no headers, no repr of `response` itself, and nothing from the request (no API key,
+    no messages). Only counts and block-type names derived from `response.content`."""
+
+    block_types: tuple[str, ...]
+    text_block_count: int
+    total_block_count: int
+    retained_text_length: int
+
+
 class AnthropicAPIModel(Model):
     """Sends `messages` to a real Claude model over Anthropic's Messages API and returns the text
-    of its response. Requires an API key -- ANTHROPIC_API_KEY by default, or passed explicitly."""
+    of its response. Requires an API key -- ANTHROPIC_API_KEY by default, or passed explicitly.
+
+    `last_diagnostics` (a `ModelResponseDiagnostics`) reflects the most recent `complete()` call --
+    `None` until the first call is made. It is diagnostic-only display state: nothing downstream of
+    `complete()`'s return value reads it, and it never influences what text gets returned or how it
+    is parsed."""
 
     def __init__(self, model: str, api_key: str | None = None, system: str | None = None,
                  max_tokens: int = 4096) -> None:
@@ -61,6 +86,7 @@ class AnthropicAPIModel(Model):
         self._model = model
         self._system = system
         self._max_tokens = max_tokens
+        self.last_diagnostics: ModelResponseDiagnostics | None = None
 
     def complete(self, messages: list[dict]) -> str:
         anthropic_messages = [
@@ -73,4 +99,12 @@ class AnthropicAPIModel(Model):
         response = self._client.messages.create(
             model=self._model, max_tokens=self._max_tokens, messages=anthropic_messages, **kwargs
         )
-        return "".join(block.text for block in response.content if block.type == "text")
+        block_types = tuple(block.type for block in response.content)
+        text = "".join(block.text for block in response.content if block.type == "text")
+        self.last_diagnostics = ModelResponseDiagnostics(
+            block_types=block_types,
+            text_block_count=sum(1 for block_type in block_types if block_type == "text"),
+            total_block_count=len(block_types),
+            retained_text_length=len(text),
+        )
+        return text

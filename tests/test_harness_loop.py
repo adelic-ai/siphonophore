@@ -264,6 +264,55 @@ def test_message_only_turn_still_records_honest_history_not_a_fabricated_effect(
     assert loop.history[1]["content"] == completion  # the raw completion stays available as context
 
 
+# ---- model-boundary observability: last_completion/last_diagnostics survive a parse failure -----
+
+def test_last_completion_is_set_even_when_the_completion_fails_to_parse_at_all():
+    """The core observability gap this stage closes: previously, a completion that failed
+    parse_turn() was never appended to history, so it was lost entirely -- unrecoverable even
+    under --verbose. last_completion is set as soon as model.complete() returns, before
+    parse_turn() is even called."""
+    loop = _make_loop(["not valid json at all"])
+    with pytest.raises(IntentParseError):
+        loop.step("what is your operating context")
+    assert loop.last_completion == "not valid json at all"
+
+
+def test_last_completion_is_none_before_the_first_step():
+    loop = _make_loop([])
+    assert loop.last_completion is None
+
+
+def test_last_completion_does_not_leak_from_a_previous_failed_step():
+    completion = json.dumps({"message": "ok"})
+    loop = _make_loop(["not json", completion])
+    with pytest.raises(IntentParseError):
+        loop.step("first")
+    assert loop.last_completion == "not json"
+    loop.step("second")
+    assert loop.last_completion == completion
+
+
+def test_last_completion_is_set_on_a_successful_operation_turn():
+    completion = json.dumps({"operation": {"kind": "run_artifact", "consequence": "low", "artifact_code": "pass"}})
+    loop = _make_loop([completion])
+    loop.step("please run something")
+    assert loop.last_completion == completion
+
+
+def test_last_diagnostics_is_none_for_a_model_that_provides_none():
+    """ScriptedModel (used throughout this file) declares no last_diagnostics attribute --
+    CognitiveLoop must not require one to exist, on either the success or the parse-failure
+    path."""
+    loop = _make_loop([json.dumps({"message": "hi"})])
+    loop.step("hi")
+    assert loop.last_diagnostics is None
+
+    failing_loop = _make_loop(["not json"])
+    with pytest.raises(IntentParseError):
+        failing_loop.step("hi")
+    assert failing_loop.last_diagnostics is None
+
+
 def test_operation_missing_artifact_code_fails_before_broker_dispatch_and_is_not_message_only():
     """An operation present but missing required execution material must fail closed -- it must
     not reach Broker.dispatch(), and it must not be silently downgraded to a message-only success

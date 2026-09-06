@@ -9,13 +9,22 @@ from dataclasses import dataclass
 
 import pytest
 
-from siphonophore_harness.model_anthropic import AnthropicAPIModel
+from siphonophore_harness.model_anthropic import AnthropicAPIModel, ModelResponseDiagnostics
 
 
 @dataclass
 class _FakeTextBlock:
     text: str
     type: str = "text"
+
+
+@dataclass
+class _FakeNonTextBlock:
+    """Stands in for any Anthropic content block that isn't type=="text" (e.g. "thinking") --
+    deliberately has no `.text` attribute at all, since complete() must never read one from a
+    non-text block."""
+
+    type: str
 
 
 class _FakeMessages:
@@ -31,6 +40,29 @@ class _FakeMessages:
 class _FakeAnthropicClient:
     def __init__(self, captured: dict, reply_text: str = "fake completion") -> None:
         self.messages = _FakeMessages(captured, reply_text)
+
+
+class _FakeBlockMessages:
+    """Returns an exact, caller-provided list of content blocks -- unlike _FakeMessages, not
+    limited to a single synthesized text block -- so tests can construct any block-type shape
+    (text-only, non-text-only, mixed, multiple text blocks)."""
+
+    def __init__(self, blocks: list) -> None:
+        self._blocks = blocks
+
+    def create(self, **kwargs):
+        return type("FakeMessage", (), {"content": self._blocks})()
+
+
+class _FakeBlockClient:
+    def __init__(self, blocks: list) -> None:
+        self.messages = _FakeBlockMessages(blocks)
+
+
+def _model_with_blocks(blocks: list) -> AnthropicAPIModel:
+    model = AnthropicAPIModel(model="claude-fake", api_key="sk-fake-not-real")
+    model._client = _FakeBlockClient(blocks)
+    return model
 
 
 def _model_with_fake_client(monkeypatch, reply_text: str = "fake completion", **kwargs) -> tuple[AnthropicAPIModel, dict]:
@@ -108,3 +140,66 @@ def test_complete_passes_system_kwarg_when_set():
     model._client = _FakeAnthropicClient(captured)
     model.complete([{"role": "user", "content": "hi"}])
     assert captured["system"] == "be terse"
+
+
+# ---- model-boundary diagnostics: block types captured before text-block filtering ----------------
+# All four cases from the model-boundary-observability stage: a single text block, text alongside
+# a non-text block, non-text-only, and multiple text blocks -- proving diagnostics are recorded
+# from response.content before filtering, without changing what complete() itself returns.
+
+def test_last_diagnostics_is_none_before_first_call():
+    model = AnthropicAPIModel(model="claude-fake", api_key="sk-fake-not-real")
+    assert model.last_diagnostics is None
+
+
+def test_diagnostics_capture_a_single_text_block():
+    model = _model_with_blocks([_FakeTextBlock(text="hello")])
+    completion = model.complete([{"role": "user", "content": "hi"}])
+    assert completion == "hello"
+    diagnostics = model.last_diagnostics
+    assert isinstance(diagnostics, ModelResponseDiagnostics)
+    assert diagnostics.block_types == ("text",)
+    assert diagnostics.text_block_count == 1
+    assert diagnostics.total_block_count == 1
+    assert diagnostics.retained_text_length == len("hello")
+
+
+def test_diagnostics_capture_text_alongside_a_non_text_block():
+    model = _model_with_blocks([_FakeNonTextBlock(type="thinking"), _FakeTextBlock(text="answer")])
+    completion = model.complete([{"role": "user", "content": "hi"}])
+    assert completion == "answer"  # non-text blocks still excluded from what the parser receives
+    diagnostics = model.last_diagnostics
+    assert diagnostics.block_types == ("thinking", "text")  # every block type represented
+    assert diagnostics.text_block_count == 1
+    assert diagnostics.total_block_count == 2
+    assert diagnostics.retained_text_length == len("answer")
+
+
+def test_diagnostics_capture_non_text_only_response():
+    model = _model_with_blocks([_FakeNonTextBlock(type="thinking")])
+    completion = model.complete([{"role": "user", "content": "hi"}])
+    assert completion == ""
+    diagnostics = model.last_diagnostics
+    assert diagnostics.block_types == ("thinking",)
+    assert diagnostics.text_block_count == 0
+    assert diagnostics.total_block_count == 1
+    assert diagnostics.retained_text_length == 0
+
+
+def test_diagnostics_multiple_text_blocks_join_exactly_as_before():
+    model = _model_with_blocks([_FakeTextBlock(text="a"), _FakeTextBlock(text="b")])
+    completion = model.complete([{"role": "user", "content": "hi"}])
+    assert completion == "ab"
+    diagnostics = model.last_diagnostics
+    assert diagnostics.block_types == ("text", "text")
+    assert diagnostics.text_block_count == 2
+    assert diagnostics.retained_text_length == len("ab")
+
+
+def test_diagnostics_do_not_expose_api_key_or_full_response_object():
+    model = _model_with_blocks([_FakeTextBlock(text="x")])
+    model.complete([{"role": "user", "content": "hi"}])
+    diagnostics = model.last_diagnostics
+    assert "sk-fake-not-real" not in repr(diagnostics)
+    assert not hasattr(diagnostics, "response")
+    assert not hasattr(diagnostics, "api_key")
