@@ -61,11 +61,17 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     control-plane/audit behavior, not a model-requested effect; CognitiveLoop never constructs an
     Intent for its own logging, and `event_sink` gives it no way to reach the filesystem/network
     directly (the actual persistence, if any, lives in session_log.py, a file this test does not
-    cover, deliberately -- see loop.py's own module docstring)."""
+    cover, deliberately -- see loop.py's own module docstring).
+
+    `max_parse_retries_per_turn` (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's bounded malformed-
+    output robustness policy) is allowed for the identical reason `max_operations_per_turn` is: a
+    plain integer compared against a running count, never read from or influenced by the model's
+    own completion."""
     import inspect
 
     sig = inspect.signature(loop.CognitiveLoop.__init__)
     param_names = set(sig.parameters) - {"self"}
     assert param_names == {
-        "model", "broker", "principal_id", "authority", "max_operations_per_turn", "event_sink",
+        "model", "broker", "principal_id", "authority", "max_operations_per_turn",
+        "max_parse_retries_per_turn", "event_sink",
     }

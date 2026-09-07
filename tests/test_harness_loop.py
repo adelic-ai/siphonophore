@@ -133,7 +133,7 @@ def test_hostile_completion_naming_unknown_fields_is_refused_before_any_dispatch
     Gate never gets the chance -- parse_turn()/parse_intent() rejects it outright, and nothing
     resembling an Effect is ever produced."""
     hostile = json.dumps({"operation": {"kind": "run_artifact", "consequence": "low", "token": "trust-me-bro"}})
-    loop = _make_loop([hostile])
+    loop = _make_loop([hostile], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("do something")
     # transactional history (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md): nothing committed at all
@@ -148,7 +148,7 @@ def test_operation_missing_artifact_code_fails_before_broker_dispatch_and_is_not
     just because a conversational message happened to be present alongside it."""
     broker = _CountingBroker()
     hollow = json.dumps({"message": "I'll do that.", "operation": {"kind": "run_artifact", "consequence": "low"}})
-    loop = _make_loop_with_broker([hollow], broker)
+    loop = _make_loop_with_broker([hollow], broker, max_parse_retries_per_turn=0)
 
     with pytest.raises(IntentParseError):
         loop.step("do the thing")
@@ -157,17 +157,18 @@ def test_operation_missing_artifact_code_fails_before_broker_dispatch_and_is_not
 
 
 def test_input_rejected_on_a_continuation_cycle_still_fails_closed():
-    """A parse failure at cycle 2 (after a real operation already dispatched at cycle 1) must
-    propagate exactly as a cycle-1 parse failure always has -- INPUT_REJECTED is not recoverable in
-    this stage (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md's Success/Denial/Failure Semantics)."""
-    loop = _make_loop([_op(), "not valid json at all"])
+    """A parse failure at cycle 2 (after a real operation already dispatched at cycle 1), with
+    retries disabled, must still propagate -- INPUT_REJECTED is only recoverable via the bounded
+    retry policy (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md), never silently swallowed."""
+    loop = _make_loop([_op(), "not valid json at all"], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("do something")
-    # the first cycle's operation was still fully, honestly recorded; the second (failing)
-    # cycle's completion is not appended, exactly as a cycle-1 parse failure already never was
-    # (the pre-existing alternation wrinkle this design carries forward unchanged, per
-    # docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md's History Semantics)
-    assert [entry["role"] for entry in loop.history] == ["user", "assistant", "effect"]
+    # the first cycle's operation was fully, honestly recorded; the second (failing) cycle's own
+    # malformed completion is ALSO recorded (truthfully -- this is what the model actually said),
+    # even though no "effect" entry exists for it, since there is no safe, non-fabricated outcome
+    # text to attach to a completion that never became an Intent.
+    assert [entry["role"] for entry in loop.history] == ["user", "assistant", "effect", "assistant"]
+    assert loop.history[-1]["content"] == "not valid json at all"
 
 
 # ---- denial is recoverable: no effect occurs, but the model may explain itself ------------------
@@ -343,7 +344,7 @@ def test_last_message_does_not_leak_from_a_previous_turn():
 
 def test_last_message_is_none_when_the_completion_fails_to_parse_at_all():
     hostile = json.dumps({"operation": {"kind": "run_artifact", "consequence": "low", "token": "trust-me-bro"}})
-    loop = _make_loop([hostile])
+    loop = _make_loop([hostile], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("do something")
     assert loop.last_message is None
@@ -421,7 +422,7 @@ def test_last_completion_is_set_even_when_the_completion_fails_to_parse_at_all()
     parse_turn() was never appended to history, so it was lost entirely -- unrecoverable even
     under --verbose. last_completion is set as soon as model.complete() returns, before
     parse_turn() is even called."""
-    loop = _make_loop(["not valid json at all"])
+    loop = _make_loop(["not valid json at all"], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("what is your operating context")
     assert loop.last_completion == "not valid json at all"
@@ -434,7 +435,7 @@ def test_last_completion_is_none_before_the_first_step():
 
 def test_last_completion_does_not_leak_from_a_previous_failed_step():
     completion = _msg("ok")
-    loop = _make_loop(["not json", completion])
+    loop = _make_loop(["not json", completion], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("first")
     assert loop.last_completion == "not json"
@@ -457,7 +458,7 @@ def test_last_diagnostics_is_none_for_a_model_that_provides_none():
     loop.step("hi")
     assert loop.last_diagnostics is None
 
-    failing_loop = _make_loop(["not json"])
+    failing_loop = _make_loop(["not json"], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         failing_loop.step("hi")
     assert failing_loop.last_diagnostics is None

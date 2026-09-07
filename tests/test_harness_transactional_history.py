@@ -139,7 +139,7 @@ def test_next_turn_after_A_is_not_contaminated():
 
 def test_B_empty_response_before_any_operation_rolls_back_history():
     capture = _EventCapture()
-    loop = _make_loop([""], sink=capture.sink)
+    loop = _make_loop([""], sink=capture.sink, max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("investigate the repository")
     assert loop.history == []
@@ -150,7 +150,7 @@ def test_B_empty_response_before_any_operation_rolls_back_history():
 # ---- C. parse failure before any operation (non-empty but invalid) --------------------------------
 
 def test_C_non_json_parse_failure_before_any_operation_rolls_back_history():
-    loop = _make_loop(["this is not json at all"])
+    loop = _make_loop(["this is not json at all"], max_parse_retries_per_turn=0)
     with pytest.raises(IntentParseError):
         loop.step("investigate the repository")
     assert loop.history == []
@@ -366,3 +366,58 @@ def test_work_order_finalization_commits_history_and_is_logged():
     assert "work_order.finalized" in capture.types()
     finalized_event = next(e for e in capture.events if e["event"] == "work_order.finalized")
     assert finalized_event["work_order"]["objective"] == "add a feature"
+
+
+# ---- V1: bounded malformed-output retry ------------------------------------------------------------
+
+def test_malformed_completion_recovers_via_bounded_retry():
+    capture = _EventCapture()
+    loop = _make_loop(["not json at all", _msg("recovered")], sink=capture.sink)
+    result = loop.step("say something")
+    assert result.message == "recovered"
+    assert [e["role"] for e in loop.history] == ["user", "assistant", "effect", "assistant", "effect"]
+    assert loop.history[1]["content"] == "not json at all"
+    assert "did not parse" in loop.history[2]["content"]
+    assert capture.types().count("model.failure") == 1
+    assert "turn.completed" in capture.types()
+    assert "turn.failed" not in capture.types()
+
+
+def test_malformed_completion_retries_do_not_exceed_the_configured_bound():
+    """Two malformed completions in a row, with max_parse_retries_per_turn=1 (only one retry
+    allowed): the first failure is retried once: if that retry is ALSO malformed, the turn fails
+    closed -- it does not retry a second time."""
+    capture = _EventCapture()
+    loop = _make_loop(["bad one", "bad two"], sink=capture.sink, max_parse_retries_per_turn=1)
+    with pytest.raises(IntentParseError):
+        loop.step("say something")
+    assert loop.history == []  # nothing ever committed -- the whole speculative sequence rolls back
+    assert capture.types().count("model.failure") == 2
+    assert "turn.failed" in capture.types()
+
+
+def test_malformed_completion_exhausting_all_retries_rolls_back_entirely():
+    loop = _make_loop(["bad one", "bad two", "bad three"], max_parse_retries_per_turn=2)
+    with pytest.raises(IntentParseError):
+        loop.step("say something")
+    assert loop.history == []
+
+
+def test_malformed_retry_after_a_real_operation_preserves_the_operation():
+    """A parse failure on a CONTINUATION cycle (after a real operation already committed) still
+    gets bounded retries, and the prior real operation is never lost regardless of how the retry
+    sequence resolves."""
+    loop = _make_loop([_op(), "not json", _msg("recovered after retry")])
+    result = loop.step("do something then stumble")
+    assert result.message == "recovered after retry"
+    assert len(result.operations) == 1
+    roles = [e["role"] for e in loop.history]
+    assert roles == ["user", "assistant", "effect", "assistant", "effect", "assistant", "effect"]
+    assert "same_process" in loop.history[2]["content"]
+
+
+def test_default_parse_retry_bound_is_a_small_non_negative_integer():
+    from siphonophore_harness.loop import DEFAULT_MAX_PARSE_RETRIES_PER_TURN
+
+    assert isinstance(DEFAULT_MAX_PARSE_RETRIES_PER_TURN, int)
+    assert 0 <= DEFAULT_MAX_PARSE_RETRIES_PER_TURN <= 5

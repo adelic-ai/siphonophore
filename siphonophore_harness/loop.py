@@ -26,7 +26,8 @@ never constructs one for its own logging.
 
 `test_harness_structural_proof.py` enforces the effect-producing-import property by static
 analysis, not just convention, and further asserts that `CognitiveLoop.__init__` accepts nothing
-beyond `model`, `broker`, `principal_id`, `authority`, `max_operations_per_turn`, `event_sink`.
+beyond `model`, `broker`, `principal_id`, `authority`, `max_operations_per_turn`,
+`max_parse_retries_per_turn`, `event_sink`.
 
 This is DESIGN.md section 7's proof, made structural rather than merely asserted in prose: the
 only object this class holds that can produce an Effect is a Broker, and a Broker's only public
@@ -48,7 +49,18 @@ following turn's own "user" entry landed immediately after it with no assistant 
 so the model's next completion addressed both). Once anything commits, it commits permanently for
 this turn -- a REAL mediated operation, once it happened, is never later erased merely because a
 subsequent cycle in the same turn fails; nothing is ever fabricated (no invented assistant reply)
-merely to keep roles alternating."""
+merely to keep roles alternating.
+
+**Bounded malformed-output robustness.** A completion that fails `parse_turn()` (non-JSON, or a
+schema violation) gets up to `max_parse_retries_per_turn` further chances to self-correct within
+THIS SAME turn -- never a new user turn, never a redispatched operation (a parse failure happens
+strictly before any Intent exists, so there is nothing to redispatch). This shares the transactional
+history model above exactly: the failed completion and a corrective note are appended to the same
+staged history a real operation would be, so if every retry is exhausted with nothing else having
+happened this turn, the whole sequence (original user message, every failed attempt, every
+corrective note) rolls back together; if a real operation already committed earlier in the turn,
+these entries land in `self.history` immediately and truthfully, same as any other post-commit
+content."""
 from __future__ import annotations
 
 import uuid
@@ -61,7 +73,7 @@ from siphonophore_core.identity import IdentityError
 from siphonophore_core.mediation import GateViolation
 
 from .broker import Broker
-from .intent_parsing import parse_turn
+from .intent_parsing import IntentParseError, parse_turn
 from .model import Model
 from .outcome import OperationOutcome, OutcomeCategory, TurnResult, classify_outcome
 
@@ -69,6 +81,13 @@ from .outcome import OperationOutcome, OutcomeCategory, TurnResult, classify_out
 # owner-tunable constant, not an architectural ceiling -- any small, positive integer satisfies the
 # design equally well. Counts Broker.dispatch() attempts, regardless of outcome.
 DEFAULT_MAX_OPERATIONS_PER_TURN = 4
+
+# Separate from the operation bound above -- a malformed completion never reaches Broker.dispatch()
+# at all, so it consumes a different resource (model round-trips spent self-correcting, not
+# mediation attempts). Small and fixed, matching this stage's own instruction not to build an
+# elaborate autonomous repair framework: a model that cannot produce valid JSON after a few tries
+# is not going to be rescued by more tries.
+DEFAULT_MAX_PARSE_RETRIES_PER_TURN = 2
 
 # Separate, deliberately much smaller than SameProcessBackend's 100,000-character backend-capture
 # bound (siphonophore_core/execution.py): every character here is re-sent to the model on every
@@ -98,6 +117,7 @@ class CognitiveLoop:
         principal_id: str,
         authority: Authority | None = None,
         max_operations_per_turn: int = DEFAULT_MAX_OPERATIONS_PER_TURN,
+        max_parse_retries_per_turn: int = DEFAULT_MAX_PARSE_RETRIES_PER_TURN,
         event_sink: EventSink | None = None,
     ) -> None:
         self._model = model
@@ -105,6 +125,7 @@ class CognitiveLoop:
         self._principal_id = principal_id
         self._authority = authority
         self._max_operations_per_turn = max_operations_per_turn
+        self._max_parse_retries_per_turn = max_parse_retries_per_turn
         self._event_sink = event_sink
         self.history: list[dict] = []
         self.last_message: str | None = None
@@ -149,6 +170,7 @@ class CognitiveLoop:
 
         operations: list[OperationOutcome] = []
         cycle_index = 0
+        parse_retries_used = 0
         while True:
             cycle_id = str(uuid.uuid4())
             if cycle_index > 0:
@@ -171,11 +193,33 @@ class CognitiveLoop:
 
             try:
                 parsed = parse_turn(completion, self._principal_id)
-            except Exception as exc:
+            except IntentParseError as exc:
                 self._emit(
                     "model.failure", turn_id=turn_id, cycle_id=cycle_id,
                     error_type=type(exc).__name__, error_message=str(exc),
                 )
+                # Bounded robustness policy (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md): a
+                # malformed completion gets a small, fixed number of chances to self-correct
+                # within THIS turn -- never a new user turn, never a redispatched operation (a
+                # parse failure happens strictly before any Intent exists, so there is nothing to
+                # redispatch). The failed completion and a corrective note are appended to
+                # working_history, not to self.history directly, unless a prior real event this
+                # turn already forced a commit (see commit()/the module docstring) -- so if every
+                # retry is ultimately exhausted with nothing else having happened this turn, the
+                # entire speculative sequence (original user message, every failed attempt, every
+                # corrective note) rolls back together, exactly as a single immediate failure
+                # would have. If a real operation already committed earlier this turn, these
+                # entries land in self.history immediately and truthfully, same as any other
+                # post-commit content.
+                working_history.append({"role": "assistant", "content": completion})
+                if parse_retries_used < self._max_parse_retries_per_turn:
+                    parse_retries_used += 1
+                    working_history.append({
+                        "role": "effect",
+                        "content": f"your completion did not parse ({exc}); respond again with a single valid JSON envelope",
+                    })
+                    cycle_index += 1
+                    continue
                 self._emit("turn.failed", turn_id=turn_id, reason="input_rejected")
                 raise
             self.last_message = parsed.message
