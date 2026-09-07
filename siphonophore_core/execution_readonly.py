@@ -19,7 +19,9 @@ executes code of any kind, spawns a process, or opens anything for writing.
 """
 from __future__ import annotations
 
+import fnmatch
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .execution import ExecutionBackend, ExecutionError
@@ -31,6 +33,97 @@ _MAX_LISTING_ENTRIES = 2_000
 _MAX_SEARCH_MATCHES = 500
 _MAX_MATCH_LINE_CHARS = 500
 _MAX_FILES_WALKED = 5_000
+
+# Applied unconditionally, regardless of any project .gitignore's own content -- the highest-cost,
+# most-universal noise sources a recursive repository walk hits (version-control internals,
+# language-specific dependency/build/cache directories). Defense in depth, not a substitute for
+# .gitignore parsing below: plenty of real repositories never bother listing these in their own
+# .gitignore "because it's obviously excluded by convention" (the exact reasoning that motivated
+# this list, not a guess). A directory whose name is in this set, or that ends with ".egg-info",
+# is never descended into -- its contents are not walked, not read, not counted toward
+# _MAX_FILES_WALKED, regardless of what any .gitignore says.
+_HARDCODED_EXCLUDED_DIR_NAMES = frozenset({
+    ".git", ".hg", ".svn", ".venv", "venv", "__pycache__", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".tox", "node_modules", "dist", "build",
+})
+
+
+def _is_hardcoded_excluded_dir(name: str) -> bool:
+    return name in _HARDCODED_EXCLUDED_DIR_NAMES or name.endswith(".egg-info")
+
+
+@dataclass(frozen=True)
+class _IgnoreRule:
+    """One parsed line of a `.gitignore` file. Deliberately a small, honestly-scoped subset of
+    real gitignore semantics -- see `_GitignoreRules`'s own docstring for exactly what is and is
+    not supported."""
+
+    pattern: str
+    negate: bool
+    dir_only: bool
+    anchored: bool
+
+
+def _parse_gitignore_lines(text: str) -> tuple[_IgnoreRule, ...]:
+    rules: list[_IgnoreRule] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        negate = line.startswith("!")
+        if negate:
+            line = line[1:]
+        if not line:
+            continue
+        dir_only = line.endswith("/")
+        if dir_only:
+            line = line[:-1]
+        anchored = line.startswith("/") or "/" in line
+        if line.startswith("/"):
+            line = line[1:]
+        if not line:
+            continue
+        rules.append(_IgnoreRule(pattern=line, negate=negate, dir_only=dir_only, anchored=anchored))
+    return tuple(rules)
+
+
+class _GitignoreRules:
+    """A small, dependency-free, honestly-scoped subset of `.gitignore` matching -- ONE file, read
+    from `root` itself, never a nested per-directory `.gitignore` (unlike real git, which consults
+    every directory's own file on the way down). Supports: blank lines and `#` comments (ignored),
+    `!` negation (a later matching rule re-includes a path an earlier rule excluded), a trailing
+    `/` meaning "directories only", and a pattern containing `/` (leading or embedded) being
+    anchored to `root` and matched against the full repo-relative path rather than just the
+    basename. Pattern matching itself is Python's `fnmatch` (shell-style glob), not git's own
+    matcher -- `fnmatch`'s `*` matches across path separators, which happens to make many common
+    anchored patterns (e.g. `build/*.log`) behave correctly, but this is NOT a claim of exact git
+    `**`-vs-`*` semantics, and negation cannot re-include a path whose ancestor directory this walk
+    already declined to descend into (an excluded directory's contents are never even examined --
+    matching how a real search tool asked to skip an excluded tree would behave anyway). Adequate
+    for the common, highest-value patterns (`__pycache__/`, `*.pyc`, `.env`, `build/`,
+    `/generated.py`); not a substitute for `git check-ignore` for anyone needing exact semantics.
+    """
+
+    def __init__(self, rules: tuple[_IgnoreRule, ...]) -> None:
+        self._rules = rules
+
+    @classmethod
+    def load(cls, root: Path) -> "_GitignoreRules":
+        try:
+            text = (root / ".gitignore").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return cls(())
+        return cls(_parse_gitignore_lines(text))
+
+    def is_ignored(self, rel_posix: str, name: str, *, is_dir: bool) -> bool:
+        ignored = False
+        for rule in self._rules:
+            if rule.dir_only and not is_dir:
+                continue
+            target = rel_posix if rule.anchored else name
+            if fnmatch.fnmatch(target, rule.pattern):
+                ignored = not rule.negate
+        return ignored
 
 
 class PathEscapesRootError(ExecutionError):
@@ -119,17 +212,73 @@ class ListDirectoryBackend(ExecutionBackend):
         )
 
 
+def _iter_confined_files(root: Path, start: Path, ignore_rules: _GitignoreRules):
+    """Recursively yields `(entry, rel_posix)` for every regular file under `start`, confined to
+    `root` -- CONFINEMENT IS CHECKED ON EVERY DISCOVERED ENTRY, BEFORE it is
+    ever descended into or read, not merely when a later match happens to be formatted for output.
+    This is the fix for the confinement gap a bare `start.rglob("*")` walk had: nothing here trusts
+    that a path discovered by recursion is still under `root` merely because `start` itself was
+    confined -- a symlink (to a file or a directory) anywhere under `start` can point outside
+    `root`, and each one is independently re-resolved and re-checked, exactly like `_confine()`
+    already does for a caller-supplied top-level path. An entry that resolves outside `root` is
+    skipped entirely -- neither descended into (if a directory) nor read (if a file) -- silently,
+    the same "don't treat an edge case as an attack requiring propagation" precedent this module
+    already applies to an unreadable file's OSError. Also skips any directory excluded by
+    `_is_hardcoded_excluded_dir()` or `ignore_rules` -- applied once, at the point of deciding
+    whether to descend, so an excluded directory's contents are never even examined, let alone
+    counted toward `_MAX_FILES_WALKED`."""
+    resolved_root = root.resolve()
+    stack = [start]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                resolved_entry = entry.resolve()
+            except OSError:
+                continue
+            if resolved_entry != resolved_root and resolved_root not in resolved_entry.parents:
+                continue  # escapes root (e.g. a symlink pointing outside it) -- never read, never descended into
+            try:
+                is_dir = entry.is_dir()
+            except OSError:
+                continue
+            rel_posix = resolved_entry.relative_to(resolved_root).as_posix()
+            if is_dir:
+                if _is_hardcoded_excluded_dir(entry.name) or ignore_rules.is_ignored(rel_posix, entry.name, is_dir=True):
+                    continue
+                stack.append(entry)
+            else:
+                if ignore_rules.is_ignored(rel_posix, entry.name, is_dir=False):
+                    continue
+                yield entry, rel_posix
+
+
 class SearchRepositoryBackend(ExecutionBackend):
     """Searches for a regular-expression `pattern` (Python `re`, matched per line) under `root`,
     optionally narrowed to a `path` subdirectory -- confined the same way `ReadFileBackend`/
-    `ListDirectoryBackend` are. Bounded at `max_matches` and per-line at `_MAX_MATCH_LINE_CHARS`;
-    also bounded on how many files it will walk (`_MAX_FILES_WALKED`) so a huge tree cannot make a
-    single search run unboundedly long even before the match bound is reached.
+    `ListDirectoryBackend` are, and RE-confined on every entry the recursive walk itself discovers
+    (`_iter_confined_files`), not merely on the caller-supplied top-level `path`. Bounded at
+    `max_matches` and per-line at `_MAX_MATCH_LINE_CHARS`; also bounded on how many (non-excluded,
+    confined) files it will walk (`_MAX_FILES_WALKED`) so a huge tree cannot make a single search
+    run unboundedly long even before the match bound is reached.
 
-    No shell, no subprocess, no external `grep`/`ripgrep` dependency -- a plain Python walk plus
-    `re.search` per line, so this backend needs no separate sandboxing story beyond the path
-    confinement and bounds already stated. A file that cannot be read as text (a genuine OS error,
-    e.g. a broken symlink) is silently skipped, not treated as a match failure."""
+    Excludes a small, hardcoded set of universal noise directories unconditionally
+    (`_HARDCODED_EXCLUDED_DIR_NAMES` -- `.git`, `.venv`/`venv`, `__pycache__`, `.pytest_cache`,
+    `node_modules`, `*.egg-info`, `dist`, `build`, ...), regardless of whether the searched
+    repository's own `.gitignore` happens to list them, plus whatever a root-level `.gitignore`
+    itself excludes (`_GitignoreRules` -- a small, honestly-scoped subset, not full git semantics;
+    see its own docstring for exactly what is and isn't supported). Both exclusions apply BEFORE
+    truncation, so the `max_matches`/`_MAX_FILES_WALKED` bounds are only ever consumed by genuinely
+    relevant content, not alphabetically-early noise.
+
+    No shell, no subprocess, no external `grep`/`ripgrep`/gitignore-parsing dependency -- a plain
+    Python walk plus `re.search` per line, so this backend needs no separate sandboxing story
+    beyond the path confinement and bounds already stated. A file that cannot be read as text (a
+    genuine OS error, e.g. a broken symlink) is silently skipped, not treated as a match failure."""
 
     def __init__(self, root: str | Path, max_matches: int = _MAX_SEARCH_MATCHES) -> None:
         self._root = Path(root)
@@ -148,14 +297,17 @@ class SearchRepositoryBackend(ExecutionBackend):
         except re.error as exc:
             raise ExecutionError(f"invalid search pattern: {exc}") from exc
 
-        resolved_root = self._root.resolve()
+        ignore_rules = _GitignoreRules.load(self._root)
         matches: list[dict] = []
         files_walked = 0
         truncated_matches = False
         truncated_files = False
-        for file_path in sorted(confined.rglob("*")):
-            if not file_path.is_file():
-                continue
+        # Sorted by repo-relative path, matching the lexical order this backend has always
+        # returned -- now over a clean (confined, excluded, ignore-filtered) file list rather than
+        # a raw recursive walk, so truncation below only ever discards genuinely-searched content,
+        # never noise that happened to sort first.
+        walked = sorted(_iter_confined_files(self._root, confined, ignore_rules), key=lambda pair: pair[1])
+        for file_path, rel_posix in walked:
             files_walked += 1
             if files_walked > _MAX_FILES_WALKED:
                 truncated_files = True
@@ -166,8 +318,7 @@ class SearchRepositoryBackend(ExecutionBackend):
                 continue
             for line_no, line in enumerate(text.splitlines(), start=1):
                 if regex.search(line):
-                    rel = file_path.resolve().relative_to(resolved_root)
-                    matches.append({"path": str(rel), "line": line_no, "text": line[:_MAX_MATCH_LINE_CHARS]})
+                    matches.append({"path": rel_posix, "line": line_no, "text": line[:_MAX_MATCH_LINE_CHARS]})
                     if len(matches) >= self._max_matches:
                         truncated_matches = True
                         break
