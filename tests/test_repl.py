@@ -355,6 +355,31 @@ def test_render_outcome_error_input_rejected_has_no_decision_context():
     assert "execution_class=" not in rendered  # no Decision ever existed pre-Intent
 
 
+def test_render_outcome_error_with_no_prior_operations_shows_no_effects_notice():
+    exc = IntentParseError("completion is not valid JSON")
+    rendered = repl.render_outcome_error(exc, operations=())
+    assert "already dispatched" not in rendered
+
+
+def test_render_outcome_error_truthfully_shows_operations_that_already_happened():
+    """V1.1: a real trial's terminal presentation read as if the original input had simply been
+    rejected before anything happened, even though several real operations had already been
+    dispatched and mediated earlier in the same failed turn. render_outcome_error(operations=...)
+    (CognitiveLoop.last_operations, loop.py) must surface that truth ahead of the error itself."""
+    prior_op = OperationOutcome(
+        intent_id="i-1", category=OutcomeCategory.EXECUTED, execution_class="same_process",
+        authority_id=None, order_id=None, detail={"result": 42}, reason=None,
+    )
+    exc = IntentParseError("completion is not valid JSON")
+    rendered = repl.render_outcome_error(exc, operations=(prior_op,))
+    assert "1 real operation(s) were already dispatched and mediated this turn" in rendered
+    assert "[executed]" in rendered
+    assert "i-1" in rendered
+    assert "[input rejected]" in rendered
+    # the truthful notice comes first, ahead of the error line, matching operations' own dispatch order
+    assert rendered.index("already dispatched") < rendered.index("[input rejected]")
+
+
 def test_render_outcome_error_authority_rejected_has_no_decision_context():
     profile = portable_profile()
     order = profile.gate.issue_order("order-mismatch", "issuer", frozenset({"run_artifact"}), max_delegation_depth=1)

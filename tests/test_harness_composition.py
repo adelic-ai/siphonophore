@@ -239,6 +239,28 @@ def test_planning_profile_confines_reads_to_its_configured_root(tmp_path):
         profile.broker.dispatch(intent)
 
 
+def test_planning_profile_search_excludes_generated_session_log_directory(tmp_path):
+    """V1.1: a real trial's search_repository fanned into a prior session's own JSONL transcript
+    under the reference REPL's default log directory and surfaced it as ordinary repository
+    evidence. planning_profile() wires SearchRepositoryBackend to exclude
+    session_log.DEFAULT_SESSION_LOG_DIR_NAME by default."""
+    from siphonophore_harness.session_log import DEFAULT_SESSION_LOG_DIR_NAME
+
+    (tmp_path / "src.py").write_text("SESSION_MARKER real source\n")
+    session_dir = tmp_path / DEFAULT_SESSION_LOG_DIR_NAME
+    session_dir.mkdir()
+    (session_dir / "prior.jsonl").write_text('{"content": "SESSION_MARKER stale transcript"}\n')
+
+    profile = planning_profile(root=str(tmp_path))
+    intent = Intent(
+        kind="search_repository", principal_id="alice", intent_id="i-search", consequence="low",
+        payload={"pattern": "SESSION_MARKER"},
+    )
+    result = profile.broker.dispatch(intent)
+    paths = {m["path"] for m in result.detail["matches"]}
+    assert paths == {"src.py"}
+
+
 def test_compose_kind_profile_defaults_to_identity_mapping():
     counting = _CountingBackend("widget")
     profile = compose_kind_profile("widgets", backends={"widget": counting})

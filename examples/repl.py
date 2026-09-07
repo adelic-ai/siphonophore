@@ -64,7 +64,7 @@ from siphonophore_harness.composition import ExecutionProfile, planning_profile,
 from siphonophore_harness.loop import CognitiveLoop
 from siphonophore_harness.outcome import DispatchResult, OperationOutcome, OutcomeCategory, TurnResult, classify_outcome
 from siphonophore_harness.prompts import build_system_prompt
-from siphonophore_harness.session_log import EventLog
+from siphonophore_harness.session_log import DEFAULT_SESSION_LOG_DIR_NAME, EventLog
 
 try:
     from siphonophore_harness.model_anthropic import AnthropicAPIModel
@@ -320,6 +320,7 @@ def render_turn(
 def render_outcome_error(
     exc: BaseException,
     *,
+    operations: tuple[OperationOutcome, ...] = (),
     verbose: bool = False,
     raw_completion: object = None,
     diagnostics: object = None,
@@ -331,18 +332,34 @@ def render_outcome_error(
     context. An exception classify_outcome() cannot place in the closed category set is shown as an
     explicit unknown/internal state, not silently mislabeled.
 
+    `operations` (CognitiveLoop.last_operations -- loop.py's V1.1 truthful-failure-reporting fix)
+    is every mediated operation that actually happened THIS turn before it failed, in dispatch
+    order -- rendered FIRST, ahead of the error itself, whenever non-empty. A real trial reproduced
+    a terminal presentation that read as if the original input had simply been rejected before
+    anything happened, when in fact several real operations had already been dispatched and
+    mediated earlier in the same failed turn; this makes that impossible to miss rather than
+    requiring --verbose or a JSONL inspection to discover.
+
     Normal mode (verbose=False, the default) is exactly the concise operator error this always
     was -- unchanged. --verbose additionally appends this turn's model-response diagnostics (when
     available) and its raw retained completion (when available), the same evidence a successful
     turn's --verbose output already shows -- so an operator seeing a parse failure can tell, without
     guessing, whether Claude returned non-JSON prose, an empty/non-text response, or something
     else, instead of only ever seeing json.JSONDecodeError's own generic message."""
+    lines: list[str] = []
+    if operations:
+        lines.append(
+            f"[{len(operations)} real operation(s) were already dispatched and mediated this turn "
+            "before it failed -- the effects below already happened]"
+        )
+        lines.extend(render_operation_outcome(outcome) for outcome in operations)
+        lines.append("")
     try:
         category = classify_outcome(exc)
     except ValueError:
-        lines = [f"[unknown/internal error] {type(exc).__name__}: {exc}"]
+        lines.append(f"[unknown/internal error] {type(exc).__name__}: {exc}")
     else:
-        lines = [f"[{_CATEGORY_LABELS[category]}] {exc}"]
+        lines.append(f"[{_CATEGORY_LABELS[category]}] {exc}")
         decision = getattr(exc, "decision", None)
         if decision is not None:
             detail = f"  execution_class={decision.execution_class}"
@@ -447,7 +464,7 @@ def main() -> int:
         authority = _grant_root_authority(profile, args.principal_id)
 
     session_id = str(uuid.uuid4())
-    session_log_path = None if args.no_session_log else (args.session_log or f"siphonophore-sessions/{session_id}.jsonl")
+    session_log_path = None if args.no_session_log else (args.session_log or f"{DEFAULT_SESSION_LOG_DIR_NAME}/{session_id}.jsonl")
     event_log = EventLog(path=session_log_path, session_id=session_id)
     event_log.emit(
         "session.started", model=args.model, profile=profile.name, principal_id=args.principal_id,
@@ -491,7 +508,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 -- a REPL should report and keep going, not crash
             error_raw_completion = loop.last_completion if args.verbose else None
             error_diagnostics = loop.last_diagnostics if args.verbose else None
-            print(f"\n{render_outcome_error(exc, verbose=args.verbose, raw_completion=error_raw_completion, diagnostics=error_diagnostics)}\n")
+            print(f"\n{render_outcome_error(exc, operations=loop.last_operations, verbose=args.verbose, raw_completion=error_raw_completion, diagnostics=error_diagnostics)}\n")
             continue
 
         raw_completion = loop.last_completion if args.verbose else None

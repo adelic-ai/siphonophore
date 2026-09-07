@@ -469,3 +469,84 @@ Fixes a reproduced defect: under `planning_profile()`, the model was told its de
 compaction, a semantic outline/`ResponsePlan` mechanism, `fetch_url`, Constructor/worker
 orchestration, expanding the planning profile toward a build agent. See the final tranche report
 for the exact deferred-decision list and the Mac human-test procedure.
+
+## V1.1 Stabilization Addendum, Part 2
+
+Written after a real, live-provider REPL trial against the actual Anthropic API (`claude-sonnet-5`,
+the `planning` profile, this repository's own root) reproduced two further defects the first
+addendum's fixes did not cover, and surfaced two ergonomics gaps worth closing while already in this
+code. Grounded in two live runs' own rendered output and JSONL transcripts, not speculation — both
+runs are reproducible with `examples/repl.py --model claude-sonnet-5 --root . --verbose` given a real
+API key.
+
+**5. The bounded malformed-completion retry counter is now CONSECUTIVE, not cumulative, across one
+turn.** A live run's own JSONL transcript reproduced the defect directly: three ISOLATED empty-text
+completions (`block_types=['thinking','text']`, `retained_text_length=0` — the same empty-block
+shape the first addendum's diagnostics fields were added to detect) occurred, each individually
+recovered via the bounded retry, interspersed among 8 real, successful `Broker.dispatch()` calls, in
+one 12-cycle turn that ultimately completed normally (`turn.completed operation_count=8,
+exhausted=False, loop_detected=False`, no `turn.failed` at all). Under the PRIOR cumulative counter
+(`parse_retries_used`, never reset), this exact real sequence would have raised on the third isolated
+failure — the count would have reached `DEFAULT_MAX_PARSE_RETRIES_PER_TURN` (2) even though each
+failure individually self-corrected — ending an otherwise entirely healthy turn as though its whole
+input had been rejected, which is precisely the shape of defect a second live run (12 real
+operations, one isolated empty completion, likewise recovered and completed normally) also avoided
+under the fix. `CognitiveLoop.step()` (`loop.py`) now resets its consecutive-failure counter to zero
+the moment any completion this turn parses successfully, whatever it contains — so an isolated,
+transient hiccup anywhere in a long turn costs exactly one retry and is then forgotten, while N
+GENUINELY CONSECUTIVE malformed completions (a real, repeated self-correction failure, not sporadic
+flakiness) still exhaust the same bound and still fail the turn exactly as before
+(`test_consecutive_parse_failures_still_fail_the_turn_even_after_a_real_operation`,
+`test_harness_transactional_history.py`).
+
+**6. `CognitiveLoop.last_operations` gives a caller a truthful account of a turn that ultimately
+raised.** Even with fix 5 above, a turn CAN still fail after real operations occurred (a genuine
+repeated parse failure, a model-transport exception, an unclassifiable outcome, an
+`INTEGRITY_REJECTED` fail-closed refusal) — `step()` correctly still raises in every one of those
+cases (unchanged; `self.history` was always transactionally truthful about this, per the module's
+pre-existing scenarios G/H/I). What was missing was a way for a PRESENTATION layer to see that truth
+without diffing `self.history` before and after a failed call. `last_operations` (reset to `()` at
+the start of every `step()`, updated after every real dispatch attempt this turn) fixes this;
+`examples/repl.py`'s exception handler now passes it to `render_outcome_error()`, which renders
+every already-happened operation, truthfully labeled, AHEAD of the error itself, whenever
+non-empty — so the terminal no longer reads as "your input was rejected" when in fact several real,
+mediated effects already occurred earlier in the same failed turn.
+
+**7. `SearchRepositoryBackend` accepts payload `path` naming a single file, not only a directory.**
+A live run's model tried this against a file it had already found via a directory search, got the
+prior `ExecutionError("no such directory to search: ...")`, and recovered by falling back to a
+directory-scoped search — functioning, but a real, reproduced rough edge. `path` now may name either
+a directory (recursive search, unchanged) or a single file (searched by itself, via the same
+per-file scan logic — `_scan_file_for_matches()` — a directory walk already applies to every file it
+visits); a `path` naming neither fails closed exactly as before. This is a genuine ergonomics
+widening, not a confinement or bound relaxation: a single-file search is still root-confined, still
+read-only, still bounded at `max_matches`/`_MAX_MATCH_LINE_CHARS`, and touches exactly the one file
+named.
+
+**8. `search_repository`'s recursive walk excludes a harness's own generated session-log
+directory by default.** A prior real trial's `search_repository` fanned into
+`siphonophore-sessions/*.jsonl` (this reference REPL's own durable JSONL transcripts,
+`session_log.py`) and surfaced a stale session's content as if it were ordinary repository/source
+evidence to the CURRENT investigation. `SearchRepositoryBackend` (`execution_readonly.py`) gained a
+constructor-supplied `extra_excluded_dir_names` (empty by default — this core module stays
+harness-neutral and adds no hardcoded, project-specific name to its own noise list, unlike the
+already-hardcoded, genuinely universal `.git`/`.venv`/`__pycache__`/etc. set);
+`composition.py`'s `planning_profile()` supplies `session_log.DEFAULT_SESSION_LOG_DIR_NAME` (a new
+shared constant, so `examples/repl.py`'s own default log path and this exclusion cannot drift out of
+sync) as that exclusion. `read_file`/`list_directory` are unaffected — a caller who explicitly wants
+to inspect a session log (as generic JSONL provenance evidence, per this document's own "JSONL
+provenance is not independent kernel evidence" non-guarantee) can still name it directly; only the
+noise-reducing recursive default excludes it.
+
+**Live-provider acceptance.** Two fresh sessions, both against the real Anthropic API
+(`claude-sonnet-5`), both driving the exact primary scenario ("inspect the repository and explain how
+the planning profile prevents modification, without compiling a WorkOrder"): run 1 dispatched 8 real
+operations (2 `list_directory`, 3 `read_file`, 2 `search_repository`, plus a `read_file` repeat) and
+recovered 3 isolated empty completions; run 2 dispatched 12 real operations and recovered 1. Both
+completed in exactly one logical turn (`turn_id` constant across every cycle), named no `work_order`
+(as instructed), produced zero `turn.failed` events, and every dispatched `intent_id` was distinct
+across the whole turn (no duplicate dispatch from retry handling, in either run).
+
+**Explicitly out of scope for this addendum, Part 2** (deferred, not rejected, unchanged from Part
+1's list): long-session context compaction, a semantic outline/`ResponsePlan` mechanism,
+`fetch_url`, Constructor/worker orchestration, expanding the planning profile toward a build agent.

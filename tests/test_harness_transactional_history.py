@@ -425,6 +425,80 @@ def test_default_parse_retry_bound_is_a_small_non_negative_integer():
     assert 0 <= DEFAULT_MAX_PARSE_RETRIES_PER_TURN <= 5
 
 
+# ---- V1.1: parse-retry bound is CONSECUTIVE, not cumulative -----------------------------------
+# Reproduced defect: several real operations succeeded, interspersed with occasional isolated
+# transient malformed/empty completions, until a LATER, unrelated isolated failure alone exhausted
+# an allowance earlier isolated failures had already partly spent -- ending an otherwise-healthy,
+# many-operation turn as if the whole turn's input had simply been rejected.
+
+def test_isolated_transient_parse_failures_do_not_accumulate_across_real_operations():
+    """max_parse_retries_per_turn=1: three ISOLATED malformed completions, each immediately
+    followed by a real, successful operation -- none consecutive. Under the old cumulative
+    counter, the third isolated failure alone would have exceeded the total budget of 1 and failed
+    the whole turn even though two operations had already succeeded. Under the fixed, consecutive
+    counter, every isolated failure gets its own fresh retry because a success resets the count."""
+    completions = [
+        "bad one", _op(artifact_code="A = 1"),
+        "bad two", _op(artifact_code="A = 2"),
+        "bad three", _msg("done after three isolated hiccups"),
+    ]
+    loop = _make_loop(completions, max_parse_retries_per_turn=1)
+    result = loop.step("do several things, tolerating occasional hiccups")
+    assert result.message == "done after three isolated hiccups"
+    assert len(result.operations) == 2
+
+
+def test_consecutive_parse_failures_still_fail_the_turn_even_after_a_real_operation():
+    """The consecutive-reset fix must not become unbounded: TWO malformed completions IN A ROW
+    (not isolated) after a real operation still exhausts a bound of 1 and fails the turn -- a
+    genuine repeated self-correction failure is still caught, distinct from isolated flakiness."""
+    completions = [_op(artifact_code="A = 1"), "bad one", "bad two"]
+    loop = _make_loop(completions, max_parse_retries_per_turn=1)
+    with pytest.raises(IntentParseError):
+        loop.step("do something then fail to self-correct twice in a row")
+    # the real operation that already happened is committed and not erased by the later failure --
+    # the first "bad one" gets its one allowed retry (assistant + corrective effect note), and the
+    # second consecutive failure's own completion is appended before the turn fails closed.
+    roles = [e["role"] for e in loop.history]
+    assert roles == ["user", "assistant", "effect", "assistant", "effect", "assistant"]
+    assert "same_process" in loop.history[2]["content"]
+
+
+# ---- V1.1: last_operations gives a truthful account of a turn that ultimately raised ----------
+# Reproduced defect: examples/repl.py's terminal presentation of a raised exception showed only
+# the exception itself, reading as if the original input had been rejected outright, with no way
+# for a caller to see that real operations had already been dispatched and mediated this same turn.
+
+def test_last_operations_reflects_real_operations_that_happened_before_a_terminal_parse_failure():
+    completions = [_op(artifact_code="A = 1"), _op(artifact_code="A = 2"), "bad one", "bad two"]
+    loop = _make_loop(completions, max_parse_retries_per_turn=1)
+    with pytest.raises(IntentParseError):
+        loop.step("do two things then fail to self-correct")
+    assert len(loop.last_operations) == 2
+    assert all(op.category == OutcomeCategory.EXECUTED for op in loop.last_operations)
+
+
+def test_last_operations_reflects_real_operations_before_a_model_transport_failure():
+    loop = _loop_with_raising_model([_op(), _op(consequence="high")], fail_at=2)
+    with pytest.raises(RuntimeError, match="simulated"):
+        loop.step("do two things then the model itself fails")
+    assert len(loop.last_operations) == 2
+
+
+def test_last_operations_is_reset_to_empty_at_the_start_of_each_turn():
+    loop = _make_loop([_op(artifact_code="A = 1"), _msg("done"), _msg("a plain second turn")])
+    loop.step("first turn does one operation")
+    assert len(loop.last_operations) == 1
+    loop.step("second turn requests nothing")
+    assert loop.last_operations == ()
+
+
+def test_last_operations_is_empty_when_no_operation_ever_happened_this_turn():
+    loop = _make_loop([_msg("just a reply")])
+    loop.step("say something")
+    assert loop.last_operations == ()
+
+
 # ---- V1: long-session coherence ---------------------------------------------------------------
 
 def test_long_mixed_session_stays_coherent_across_many_turns():

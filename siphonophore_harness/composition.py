@@ -50,6 +50,7 @@ from siphonophore_core.mediation import Gate
 from siphonophore_core.policy import ConsequencePolicy, KindExecutionPolicy
 
 from .broker import Broker
+from .session_log import DEFAULT_SESSION_LOG_DIR_NAME
 
 
 @dataclass(frozen=True)
@@ -215,10 +216,21 @@ def planning_profile(root: str) -> ExecutionProfile:
     can ever issue -- typically the repository root the agent is meant to investigate. Confinement
     is real (`execution_readonly.py`'s own `_confine`, symlink-aware), not a naming convention;
     nothing above this profile's own construction can widen it -- a completion cannot supply its
-    own root, only a path relative to the one this function was called with."""
+    own root, only a path relative to the one this function was called with.
+
+    `search_repository`'s recursive walk excludes `DEFAULT_SESSION_LOG_DIR_NAME`
+    (`session_log.py`) -- the reference REPL's own generated JSONL session-log directory
+    (`examples/repl.py`) -- in addition to `execution_readonly.py`'s own hardcoded, harness-neutral
+    noise list: a prior session's transcript is provenance/audit evidence ABOUT this harness, never
+    source/repository evidence a code investigation should fan out into and treat as ordinary
+    project content. `read_file`/`list_directory` are unaffected -- a caller who explicitly wants to
+    inspect a session log can still name it directly; only the noise-reducing recursive search
+    default excludes it."""
     backends: dict[str, ExecutionBackend] = {
         "read_file": ReadFileBackend(root=root),
         "list_directory": ListDirectoryBackend(root=root),
-        "search_repository": SearchRepositoryBackend(root=root),
+        "search_repository": SearchRepositoryBackend(
+            root=root, extra_excluded_dir_names=(DEFAULT_SESSION_LOG_DIR_NAME,),
+        ),
     }
     return compose_kind_profile("planning", backends=backends)

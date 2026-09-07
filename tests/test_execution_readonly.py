@@ -174,10 +174,29 @@ def test_search_repository_bounded_matches(sandbox):
     assert effect.detail["truncated"] is True
 
 
-def test_search_repository_path_must_be_a_directory(sandbox):
+def test_search_repository_path_may_name_a_single_file(sandbox):
+    """A `path` naming one existing file searches just that file, not the whole tree -- a genuine
+    ergonomics widening, not a confinement/bound relaxation (V1.1: reproduced a real trial where
+    the model tried this, got the old ExecutionError, and had to recover by falling back to a
+    directory search)."""
     backend = SearchRepositoryBackend(root=sandbox)
-    with pytest.raises(ExecutionError, match="no such directory to search"):
-        backend.run(None, _intent("search_repository", {"pattern": "x", "path": "README.md"}))
+    effect = backend.run(None, _intent("search_repository", {"pattern": "MARKER_TOKEN", "path": "README.md"}))
+    assert [m["path"] for m in effect.detail["matches"]] == ["README.md"]
+    assert effect.detail["truncated"] is False
+
+
+def test_search_repository_single_file_path_never_reads_other_files(sandbox):
+    """Confirms the single-file mode is genuinely scoped to that one file -- src/nested/deep.py
+    also contains MARKER_TOKEN but must never appear in a search explicitly scoped to README.md."""
+    backend = SearchRepositoryBackend(root=sandbox)
+    effect = backend.run(None, _intent("search_repository", {"pattern": "MARKER_TOKEN", "path": "README.md"}))
+    assert all(m["path"] == "README.md" for m in effect.detail["matches"])
+
+
+def test_search_repository_path_must_exist(sandbox):
+    backend = SearchRepositoryBackend(root=sandbox)
+    with pytest.raises(ExecutionError, match="no such file or directory to search"):
+        backend.run(None, _intent("search_repository", {"pattern": "x", "path": "does-not-exist"}))
 
 
 # ---- SearchRepositoryBackend: confinement re-checked on every recursively-discovered entry -----
@@ -260,6 +279,23 @@ def test_search_repository_excludes_hardcoded_noise_dirs_consuming_match_budget(
     consumed by alphabetically-early noise directories (e.g. ".git" sorts before "src")."""
     backend = SearchRepositoryBackend(root=noisy_sandbox, max_matches=1)
     effect = backend.run(None, _intent("search_repository", {"pattern": "NOISE_MARKER"}))
+    paths = {m["path"] for m in effect.detail["matches"]}
+    assert paths == {"src/main.py"}
+
+
+def test_search_repository_excludes_caller_supplied_extra_dir_names(tmp_path):
+    """V1.1: a real trial's search_repository fanned into siphonophore-sessions/*.jsonl (a prior
+    session's own generated transcript) and surfaced it as if it were ordinary repository
+    evidence. `extra_excluded_dir_names` is the generic, caller-configurable mechanism a harness
+    (composition.py's planning_profile()) uses to exclude its own generated-artifact directories
+    without hardcoding a harness-specific name into this core, harness-neutral module."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("SESSION_MARKER real source\n")
+    (tmp_path / "siphonophore-sessions").mkdir()
+    (tmp_path / "siphonophore-sessions" / "s1.jsonl").write_text('{"SESSION_MARKER": "stale transcript"}\n')
+
+    backend = SearchRepositoryBackend(root=tmp_path, extra_excluded_dir_names=("siphonophore-sessions",))
+    effect = backend.run(None, _intent("search_repository", {"pattern": "SESSION_MARKER"}))
     paths = {m["path"] for m in effect.detail["matches"]}
     assert paths == {"src/main.py"}
 

@@ -12,3 +12,4 @@ research/
 .claude/settings.local.json
 experiments/k8s_agentwatch_observation/kind/audit-logs/
 experiments/k8s_agentwatch_observation/kind/.rendered-kind-config.yaml
+siphonophore-sessions/

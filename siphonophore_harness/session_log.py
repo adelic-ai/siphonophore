@@ -28,6 +28,13 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+# The reference REPL's own default session-log directory name (examples/repl.py). Defined here,
+# not duplicated as a string literal in every file that needs it, so composition.py's
+# planning_profile() can exclude it from search_repository's noise filtering without the two files
+# drifting out of sync -- a generated session-log transcript is provenance/audit evidence about a
+# session, never source/repository evidence a code-investigation search should fan out into.
+DEFAULT_SESSION_LOG_DIR_NAME = "siphonophore-sessions"
+
 # Applied to any single free-text field placed into an event -- independent of, and typically much
 # smaller than, the model-context bound (loop.py) or the backend capture bound (execution.py):
 # this bounds how large a single JSONL *log line* can grow from one piece of content, not how much

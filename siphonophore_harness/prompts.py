@@ -104,11 +104,12 @@ _KIND_DESCRIPTIONS = {
     ),
     "search_repository": (
         '"search_repository" searches for a regular-expression "pattern" (payload, REQUIRED) '
-        'across text files under the configured root, optionally narrowed with payload "path". '
-        "Version-control/dependency/cache directories (.git, .venv, __pycache__, node_modules, "
-        "and similar) and anything the root's own .gitignore excludes are never searched -- a "
-        "missing match there means it was intentionally skipped as noise, not that the search "
-        "failed."
+        'across text files under the configured root, optionally narrowed with payload "path" -- '
+        '"path" may name either a directory (searched recursively) or a single file (searched by '
+        "itself). Version-control/dependency/cache directories (.git, .venv, __pycache__, "
+        "node_modules, and similar), any generated session-log directory, and anything the root's "
+        "own .gitignore excludes are never searched -- a missing match there means it was "
+        "intentionally skipped as noise, not that the search failed."
     ),
 }
 _UNKNOWN_KIND_DESCRIPTION = (

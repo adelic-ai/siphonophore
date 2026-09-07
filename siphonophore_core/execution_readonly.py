@@ -212,7 +212,10 @@ class ListDirectoryBackend(ExecutionBackend):
         )
 
 
-def _iter_confined_files(root: Path, start: Path, ignore_rules: _GitignoreRules):
+def _iter_confined_files(
+    root: Path, start: Path, ignore_rules: _GitignoreRules,
+    extra_excluded_dir_names: frozenset[str] = frozenset(),
+):
     """Recursively yields `(entry, rel_posix)` for every regular file under `start`, confined to
     `root` -- CONFINEMENT IS CHECKED ON EVERY DISCOVERED ENTRY, BEFORE it is
     ever descended into or read, not merely when a later match happens to be formatted for output.
@@ -224,9 +227,11 @@ def _iter_confined_files(root: Path, start: Path, ignore_rules: _GitignoreRules)
     skipped entirely -- neither descended into (if a directory) nor read (if a file) -- silently,
     the same "don't treat an edge case as an attack requiring propagation" precedent this module
     already applies to an unreadable file's OSError. Also skips any directory excluded by
-    `_is_hardcoded_excluded_dir()` or `ignore_rules` -- applied once, at the point of deciding
-    whether to descend, so an excluded directory's contents are never even examined, let alone
-    counted toward `_MAX_FILES_WALKED`."""
+    `_is_hardcoded_excluded_dir()`, `extra_excluded_dir_names` (a caller-supplied addition -- e.g. a
+    harness's own generated session-log directory, which is not source/repository evidence and has
+    no reason to be universal enough to belong in this module's own hardcoded set), or
+    `ignore_rules` -- applied once, at the point of deciding whether to descend, so an excluded
+    directory's contents are never even examined, let alone counted toward `_MAX_FILES_WALKED`."""
     resolved_root = root.resolve()
     stack = [start]
     while stack:
@@ -248,7 +253,11 @@ def _iter_confined_files(root: Path, start: Path, ignore_rules: _GitignoreRules)
                 continue
             rel_posix = resolved_entry.relative_to(resolved_root).as_posix()
             if is_dir:
-                if _is_hardcoded_excluded_dir(entry.name) or ignore_rules.is_ignored(rel_posix, entry.name, is_dir=True):
+                if (
+                    _is_hardcoded_excluded_dir(entry.name)
+                    or entry.name in extra_excluded_dir_names
+                    or ignore_rules.is_ignored(rel_posix, entry.name, is_dir=True)
+                ):
                     continue
                 stack.append(entry)
             else:
@@ -257,32 +266,68 @@ def _iter_confined_files(root: Path, start: Path, ignore_rules: _GitignoreRules)
                 yield entry, rel_posix
 
 
+def _scan_file_for_matches(
+    file_path: Path, rel_posix: str, regex: re.Pattern, matches: list[dict], max_matches: int,
+) -> bool:
+    """Appends every matching line of `file_path` to `matches` (bounded at `max_matches`,
+    per-line-truncated at `_MAX_MATCH_LINE_CHARS`), shared between the single-file and
+    recursive-directory search paths below so both scan a file identically. Returns True the
+    moment `max_matches` is reached (the caller stops walking further files), False otherwise. A
+    file that cannot be read as text (a genuine OS error, e.g. a broken symlink) is silently
+    skipped, not treated as a match failure -- unchanged from this backend's existing behavior."""
+    try:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if regex.search(line):
+            matches.append({"path": rel_posix, "line": line_no, "text": line[:_MAX_MATCH_LINE_CHARS]})
+            if len(matches) >= max_matches:
+                return True
+    return False
+
+
 class SearchRepositoryBackend(ExecutionBackend):
     """Searches for a regular-expression `pattern` (Python `re`, matched per line) under `root`,
-    optionally narrowed to a `path` subdirectory -- confined the same way `ReadFileBackend`/
-    `ListDirectoryBackend` are, and RE-confined on every entry the recursive walk itself discovers
-    (`_iter_confined_files`), not merely on the caller-supplied top-level `path`. Bounded at
-    `max_matches` and per-line at `_MAX_MATCH_LINE_CHARS`; also bounded on how many (non-excluded,
-    confined) files it will walk (`_MAX_FILES_WALKED`) so a huge tree cannot make a single search
-    run unboundedly long even before the match bound is reached.
+    optionally narrowed with payload `path` to either a subdirectory (recursive search, the
+    original behavior) or a single file (search confined to that one file only) -- confined the
+    same way `ReadFileBackend`/`ListDirectoryBackend` are, and RE-confined on every entry the
+    recursive walk itself discovers (`_iter_confined_files`), not merely on the caller-supplied
+    top-level `path`. A `path` that resolves to neither a file nor a directory (e.g. it doesn't
+    exist) fails closed with `ExecutionError`, same as before this file-scoped mode existed --
+    this is a genuine ergonomics widening (a model narrowing a prior directory search down to one
+    file it already found need not switch to a differently-shaped `read_file` + its own regex),
+    not a relaxation of confinement or bounds: a single file is scanned with the exact same
+    per-file logic (`_scan_file_for_matches`) a directory walk already applies to every file it
+    visits. Bounded at `max_matches` and per-line at `_MAX_MATCH_LINE_CHARS`; a directory search is
+    also bounded on how many (non-excluded, confined) files it will walk (`_MAX_FILES_WALKED`) so a
+    huge tree cannot make a single search run unboundedly long even before the match bound is
+    reached -- moot for a single-file search, which walks exactly one file.
 
-    Excludes a small, hardcoded set of universal noise directories unconditionally
-    (`_HARDCODED_EXCLUDED_DIR_NAMES` -- `.git`, `.venv`/`venv`, `__pycache__`, `.pytest_cache`,
-    `node_modules`, `*.egg-info`, `dist`, `build`, ...), regardless of whether the searched
-    repository's own `.gitignore` happens to list them, plus whatever a root-level `.gitignore`
-    itself excludes (`_GitignoreRules` -- a small, honestly-scoped subset, not full git semantics;
-    see its own docstring for exactly what is and isn't supported). Both exclusions apply BEFORE
+    A directory search excludes a small, hardcoded set of universal noise directories
+    unconditionally (`_HARDCODED_EXCLUDED_DIR_NAMES` -- `.git`, `.venv`/`venv`, `__pycache__`,
+    `.pytest_cache`, `node_modules`, `*.egg-info`, `dist`, `build`, ...), regardless of whether the
+    searched repository's own `.gitignore` happens to list them, plus `extra_excluded_dir_names`
+    (constructor-supplied, e.g. a harness's own generated session-log directory -- see this
+    backend's own `__init__`), plus whatever a root-level `.gitignore` itself excludes
+    (`_GitignoreRules` -- a small, honestly-scoped subset, not full git semantics; see its own
+    docstring for exactly what is and isn't supported). All three exclusions apply BEFORE
     truncation, so the `max_matches`/`_MAX_FILES_WALKED` bounds are only ever consumed by genuinely
-    relevant content, not alphabetically-early noise.
+    relevant content, not alphabetically-early noise. A single-file search is never subject to
+    directory exclusion (there is no directory being walked) -- a caller who explicitly names one
+    file gets that file searched, exactly as `read_file` would honor an explicit path.
 
     No shell, no subprocess, no external `grep`/`ripgrep`/gitignore-parsing dependency -- a plain
     Python walk plus `re.search` per line, so this backend needs no separate sandboxing story
-    beyond the path confinement and bounds already stated. A file that cannot be read as text (a
-    genuine OS error, e.g. a broken symlink) is silently skipped, not treated as a match failure."""
+    beyond the path confinement and bounds already stated."""
 
-    def __init__(self, root: str | Path, max_matches: int = _MAX_SEARCH_MATCHES) -> None:
+    def __init__(
+        self, root: str | Path, max_matches: int = _MAX_SEARCH_MATCHES,
+        extra_excluded_dir_names: tuple[str, ...] = (),
+    ) -> None:
         self._root = Path(root)
         self._max_matches = max_matches
+        self._extra_excluded_dir_names = frozenset(extra_excluded_dir_names)
 
     def run(self, decision: Decision, intent: Intent) -> Effect:
         pattern = intent.payload.get("pattern")
@@ -290,40 +335,41 @@ class SearchRepositoryBackend(ExecutionBackend):
             raise ExecutionError("search_repository requires a non-empty 'pattern' in payload")
         subdir = intent.payload.get("path") or "."
         confined = _confine(self._root, subdir)
-        if not confined.is_dir():
-            raise ExecutionError(f"no such directory to search: {subdir!r}")
         try:
             regex = re.compile(pattern)
         except re.error as exc:
             raise ExecutionError(f"invalid search pattern: {exc}") from exc
 
-        ignore_rules = _GitignoreRules.load(self._root)
         matches: list[dict] = []
-        files_walked = 0
         truncated_matches = False
         truncated_files = False
-        # Sorted by repo-relative path, matching the lexical order this backend has always
-        # returned -- now over a clean (confined, excluded, ignore-filtered) file list rather than
-        # a raw recursive walk, so truncation below only ever discards genuinely-searched content,
-        # never noise that happened to sort first.
-        walked = sorted(_iter_confined_files(self._root, confined, ignore_rules), key=lambda pair: pair[1])
-        for file_path, rel_posix in walked:
-            files_walked += 1
-            if files_walked > _MAX_FILES_WALKED:
-                truncated_files = True
-                break
-            try:
-                text = file_path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for line_no, line in enumerate(text.splitlines(), start=1):
-                if regex.search(line):
-                    matches.append({"path": rel_posix, "line": line_no, "text": line[:_MAX_MATCH_LINE_CHARS]})
-                    if len(matches) >= self._max_matches:
-                        truncated_matches = True
-                        break
-            if truncated_matches:
-                break
+
+        if confined.is_file():
+            resolved_root = self._root.resolve()
+            rel_posix = confined.resolve().relative_to(resolved_root).as_posix()
+            truncated_matches = _scan_file_for_matches(confined, rel_posix, regex, matches, self._max_matches)
+        elif confined.is_dir():
+            ignore_rules = _GitignoreRules.load(self._root)
+            files_walked = 0
+            # Sorted by repo-relative path, matching the lexical order this backend has always
+            # returned -- now over a clean (confined, excluded, ignore-filtered) file list rather
+            # than a raw recursive walk, so truncation below only ever discards genuinely-searched
+            # content, never noise that happened to sort first.
+            walked = sorted(
+                _iter_confined_files(self._root, confined, ignore_rules, self._extra_excluded_dir_names),
+                key=lambda pair: pair[1],
+            )
+            for file_path, rel_posix in walked:
+                files_walked += 1
+                if files_walked > _MAX_FILES_WALKED:
+                    truncated_files = True
+                    break
+                if _scan_file_for_matches(file_path, rel_posix, regex, matches, self._max_matches):
+                    truncated_matches = True
+                    break
+        else:
+            raise ExecutionError(f"no such file or directory to search: {subdir!r}")
+
         return Effect(
             intent_id=intent.intent_id, execution_class="search_repository",
             detail={

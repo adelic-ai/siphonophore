@@ -67,16 +67,38 @@ this turn -- a REAL mediated operation, once it happened, is never later erased 
 subsequent cycle in the same turn fails; nothing is ever fabricated (no invented assistant reply)
 merely to keep roles alternating.
 
-**Bounded malformed-output robustness.** A completion that fails `parse_turn()` (non-JSON, or a
-schema violation) gets up to `max_parse_retries_per_turn` further chances to self-correct within
-THIS SAME turn -- never a new user turn, never a redispatched operation (a parse failure happens
-strictly before any Intent exists, so there is nothing to redispatch). This shares the transactional
-history model above exactly: the failed completion and a corrective note are appended to the same
-staged history a real operation would be, so if every retry is exhausted with nothing else having
-happened this turn, the whole sequence (original user message, every failed attempt, every
-corrective note) rolls back together; if a real operation already committed earlier in the turn,
-these entries land in `self.history` immediately and truthfully, same as any other post-commit
-content."""
+**Bounded malformed-output robustness (CONSECUTIVE, not cumulative -- V1.1 fix).** A completion
+that fails `parse_turn()` (non-JSON, or a schema violation) gets up to `max_parse_retries_per_turn`
+further chances to self-correct within THIS SAME turn -- never a new user turn, never a
+redispatched operation (a parse failure happens strictly before any Intent exists, so there is
+nothing to redispatch). The retry counter is CONSECUTIVE: it resets to zero the moment any
+completion this turn parses successfully (regardless of what it contains -- a message, an
+operation request, or a work order), so an isolated, transient malformed/empty completion in an
+otherwise long, healthy multi-operation turn costs one retry and is then forgotten, never silently
+consuming budget a much-later, unrelated hiccup then exhausts. A real trial reproduced the
+cumulative version of this defect: several successful mediated operations happened, interspersed
+with occasional transient empty completions, until a later isolated empty completion alone
+exhausted an allowance that earlier isolated failures had already partly spent, ending an
+otherwise-healthy turn as if the ENTIRE turn's input had been rejected. Only genuinely repeated,
+back-to-back malformed output -- a real self-correction failure, not sporadic flakiness -- still
+exhausts the bound and fails the turn. This shares the transactional history model above exactly:
+the failed completion and a corrective note are appended to the same staged history a real
+operation would be, so if every consecutive retry is exhausted with nothing else having happened
+this turn, the whole sequence (original user message, every failed attempt, every corrective note)
+rolls back together; if a real operation already committed earlier in the turn, these entries land
+in `self.history` immediately and truthfully, same as any other post-commit content.
+
+**Truthful failure reporting (V1.1 fix).** `self.last_operations` (reset to `()` at the start of
+every `step()` call, updated after every real `Broker.dispatch()` attempt this turn, successful or
+not) reflects every mediated operation that actually happened THIS turn even when the turn
+ultimately raises rather than returning a `TurnResult` -- a real trial reproduced a terminal
+presentation that reported an "input rejected"-shaped failure (a parse-retry exhaustion, or any
+other exception `step()` raises) after several real, already-committed mediated operations had
+already occurred this same turn, with nothing in the raised exception itself or in `step()`'s
+return value letting a caller see that. `self.last_operations` gives a caller (`examples/repl.py`'s
+own exception handler) a place to look for that truth without having to diff `self.history` before
+and after a failed call -- pure display/diagnostic state, like `last_message`/`last_completion`/
+`last_diagnostics`, read by nothing that affects dispatch."""
 from __future__ import annotations
 
 import uuid
@@ -167,6 +189,7 @@ class CognitiveLoop:
         self.last_message: str | None = None
         self.last_completion: str | None = None
         self.last_diagnostics: object | None = None
+        self.last_operations: tuple[OperationOutcome, ...] = ()
 
     def _emit(self, event_type: str, **fields) -> None:
         if self._event_sink is None:
@@ -190,6 +213,7 @@ class CognitiveLoop:
         self.last_message = None
         self.last_completion = None
         self.last_diagnostics = None
+        self.last_operations = ()
 
         turn_id = str(uuid.uuid4())
         self._emit("user.message", turn_id=turn_id, content=user_message)
@@ -207,7 +231,7 @@ class CognitiveLoop:
 
         operations: list[OperationOutcome] = []
         cycle_index = 0
-        parse_retries_used = 0
+        consecutive_parse_failures = 0
         last_operation_signature: tuple | None = None
         consecutive_repeat_count = 0
         while True:
@@ -221,7 +245,10 @@ class CognitiveLoop:
                     "model.failure", turn_id=turn_id, cycle_id=cycle_id,
                     error_type=type(exc).__name__, error_message=str(exc),
                 )
-                self._emit("turn.failed", turn_id=turn_id, reason="model_transport_failure")
+                self._emit(
+                    "turn.failed", turn_id=turn_id, reason="model_transport_failure",
+                    operation_count=len(operations),
+                )
                 raise
             self.last_completion = completion
             self.last_diagnostics = getattr(self._model, "last_diagnostics", None)
@@ -238,29 +265,41 @@ class CognitiveLoop:
                     error_type=type(exc).__name__, error_message=str(exc),
                 )
                 # Bounded robustness policy (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md): a
-                # malformed completion gets a small, fixed number of chances to self-correct
-                # within THIS turn -- never a new user turn, never a redispatched operation (a
-                # parse failure happens strictly before any Intent exists, so there is nothing to
-                # redispatch). The failed completion and a corrective note are appended to
+                # malformed completion gets a small, fixed number of CONSECUTIVE chances to
+                # self-correct within THIS turn -- never a new user turn, never a redispatched
+                # operation (a parse failure happens strictly before any Intent exists, so there
+                # is nothing to redispatch). This counter is consecutive, not cumulative: it is
+                # reset to zero below the moment any completion this turn parses successfully, so
+                # an isolated, transient failure elsewhere in a long, otherwise-healthy turn never
+                # contributes toward exhausting a MUCH LATER, unrelated failure's own budget (the
+                # module docstring's "truthful failure reporting" section explains the real trial
+                # this fixes). The failed completion and a corrective note are appended to
                 # working_history, not to self.history directly, unless a prior real event this
                 # turn already forced a commit (see commit()/the module docstring) -- so if every
-                # retry is ultimately exhausted with nothing else having happened this turn, the
-                # entire speculative sequence (original user message, every failed attempt, every
-                # corrective note) rolls back together, exactly as a single immediate failure
-                # would have. If a real operation already committed earlier this turn, these
-                # entries land in self.history immediately and truthfully, same as any other
-                # post-commit content.
+                # consecutive retry is ultimately exhausted with nothing else having happened this
+                # turn, the entire speculative sequence (original user message, every failed
+                # attempt, every corrective note) rolls back together, exactly as a single
+                # immediate failure would have. If a real operation already committed earlier this
+                # turn, these entries land in self.history immediately and truthfully, same as any
+                # other post-commit content.
                 working_history.append({"role": "assistant", "content": completion})
-                if parse_retries_used < self._max_parse_retries_per_turn:
-                    parse_retries_used += 1
+                if consecutive_parse_failures < self._max_parse_retries_per_turn:
+                    consecutive_parse_failures += 1
                     working_history.append({
                         "role": "effect",
                         "content": f"your completion did not parse ({exc}); respond again with a single valid JSON envelope",
                     })
                     cycle_index += 1
                     continue
-                self._emit("turn.failed", turn_id=turn_id, reason="input_rejected")
+                self._emit(
+                    "turn.failed", turn_id=turn_id, reason="input_rejected",
+                    operation_count=len(operations),
+                )
                 raise
+            # A completion that parses successfully -- whatever it contains -- ends this
+            # consecutive-failure streak. See the module docstring's "consecutive, not cumulative"
+            # explanation above for why this reset, not the prior turn-cumulative count, is correct.
+            consecutive_parse_failures = 0
             self.last_message = parsed.message
 
             if parsed.work_order is not None:
@@ -373,7 +412,10 @@ class CognitiveLoop:
                     "mediation.decision", turn_id=turn_id, cycle_id=cycle_id, intent_id=intent.intent_id,
                     category="unclassifiable",
                 )
-                self._emit("turn.failed", turn_id=turn_id, reason="unclassifiable_outcome", error_message=str(exc))
+                self._emit(
+                    "turn.failed", turn_id=turn_id, reason="unclassifiable_outcome",
+                    error_message=str(exc), operation_count=len(operations),
+                )
                 raise
 
             decision = getattr(outcome_source, "decision", None)
@@ -390,7 +432,10 @@ class CognitiveLoop:
                     "operation.result", turn_id=turn_id, cycle_id=cycle_id, intent_id=intent.intent_id,
                     category=category.value, reason=str(outcome_source),
                 )
-                self._emit("turn.failed", turn_id=turn_id, reason=category.value)
+                self._emit(
+                    "turn.failed", turn_id=turn_id, reason=category.value,
+                    operation_count=len(operations),
+                )
                 raise outcome_source
 
             outcome = _build_operation_outcome(intent.intent_id, outcome_source, category)
@@ -399,6 +444,7 @@ class CognitiveLoop:
                 category=category.value, detail=outcome.detail, reason=outcome.reason,
             )
             operations.append(outcome)
+            self.last_operations = tuple(operations)
             working_history.append({"role": "effect", "content": _describe_operation_outcome(outcome)})
             cycle_index += 1
 
