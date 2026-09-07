@@ -134,10 +134,12 @@ The bounded multi-cycle contract from `docs/REFERENCE_HARNESS_CONTINUATION_DESIG
 in shape and re-verified end to end against the new typed-operation surface
 (`test_continuation_check`-equivalent coverage folded into `test_harness_transactional_history.py`
 and `test_harness_session_log.py`'s end-to-end JSONL test): operation → mediation → captured,
-bounded result → fed back to the model → model answers or requests another operation within budget
-→ final answer, with a compact trace after it. `max_operations_per_turn` (default 4) and the
-model-context truncation bound (4,000 characters, independent of the 100,000-character backend
-capture bound) are unchanged.
+bounded result → fed back to the model → model answers or requests another operation → final
+answer, with a compact trace after it. **Superseded by the V1.1 stabilization addendum at the end
+of this document**: `max_operations_per_turn` (default 4) was V1's only bound on this loop and
+doubled as its logical-completion signal, which V1.1 replaced with a real completion signal plus
+two independently-scoped anomaly backstops. The model-context truncation bound (4,000 characters,
+independent of the 100,000-character backend capture bound) is unchanged.
 
 ## WorkOrder Model
 
@@ -410,3 +412,60 @@ does not need to change this stage's event schema to build resume on top of it.
 - No live Anthropic API access was available in this environment (`ANTHROPIC_API_KEY` unset,
   confirmed by direct check); all of the above is deterministic/offline. See the final report for
   the recommended live-Mac acceptance script.
+
+## V1.1 Stabilization Addendum
+
+Written after `research/factory-harness-study/` (a four-harness comparative study of Gemini CLI,
+Codex CLI, Claude Code, Cursor) and a real human REPL trial reproduced several V1 defects this
+addendum resolves. Grounded in firsthand source inspection and reproduction, not mechanical
+adoption of the study's own recommendations — see that directory's `CROSS_HARNESS_SYNTHESIS.md`/
+`SIPHONOPHORE_RECOMMENDATIONS.md`/`SIPHONOPHORE_CURRENT_STATE_CRITIQUE.md` for the evidence this
+addendum resolves against.
+
+**1. Turn termination is no longer conflated with a resource bound.** V1's
+`max_operations_per_turn=4` was simultaneously the loop's only resource control AND its de facto
+logical-completion trigger, which ended real multi-observation turns mid-reasoning. The real
+completion signal (a completion naming no further `"operation"`, or a compiled `work_order`) is
+unchanged and is now the ONLY way an ordinary turn ends. Two independently-scoped anomaly
+backstops exist instead, neither the primary termination path: `max_operations_per_turn_safety_net`
+(default 50 — deliberately generous, a genuine-runaway ceiling, `TurnResult.exhausted`) and
+`repeated_operation_limit` (default 3 — N consecutive requests naming the exact same `(kind,
+consequence, payload, artifact_code)` is a mechanical retry loop, distinct in kind from many
+different legitimate observations, `TurnResult.loop_detected`). See `siphonophore_harness/loop.py`.
+
+**2. `SearchRepositoryBackend` re-confines every recursively-discovered path, not just the
+caller-supplied top-level one.** A real, reproduced defect: a symlink (to a file or a directory)
+placed inside the confined `root` and resolving outside it was read (its content passed through
+`re.search`) before any confinement check ran against it — the check only ever ran when formatting
+a later match, and crashed with an unhandled `ValueError` after the read had already happened.
+Fixed by `_iter_confined_files()`, which independently re-resolves and re-checks confinement on
+every entry the walk itself discovers, before it is ever descended into or read. See
+`siphonophore_core/execution_readonly.py` and `tests/test_execution_readonly.py`'s symlink-escape
+tests.
+
+**3. `search_repository` now excludes noise, before truncation, not after.** A small, hardcoded,
+unconditional exclude list (`.git`, `.venv`/`venv`, `__pycache__`, `.pytest_cache`, `node_modules`,
+`*.egg-info`, `dist`, `build`, ...) plus a small, dependency-free, honestly-scoped subset of
+root-level `.gitignore` matching (`_GitignoreRules` — comments/blank lines, negation, directory-only
+markers, root-anchored and basename-glob patterns via `fnmatch`; explicitly NOT full git semantics —
+no nested per-directory `.gitignore`, no exact `**`-vs-`*` distinction) are applied while walking,
+so the existing `max_matches`/`_MAX_FILES_WALKED` bounds are only ever consumed by genuinely
+relevant content — directly fixing the reproduced defect where `.git`/`.venv` sorted ahead of real
+source and consumed the match budget. `ReadFileBackend`/`ListDirectoryBackend` are unchanged
+(single-target/non-recursive; the noise problem is specific to the recursive fan-out search).
+
+**4. The model-facing "consequence" field and capability prose are conditional on the active
+`Policy` shape.** `ExecutionProfile.consequence_is_load_bearing` (new field, `composition.py`)
+states whether `intent.consequence` genuinely selects the execution class (`ConsequencePolicy` —
+`portable_profile()`) or is structurally inert (`KindExecutionPolicy` — `planning_profile()`).
+`prompts.py`'s envelope-schema description of the `"consequence"` field, and its capability-prose
+mapping description (previously always labeled "consequence-to-execution-class" even when the
+mapping's keys were actually `Intent.kind` values, not consequence tiers), now branch on this flag.
+Fixes a reproduced defect: under `planning_profile()`, the model was told its declared
+`"consequence"` was a meaningful, honestly-self-assessed risk signal with real weight, when
+`KindExecutionPolicy.evaluate()` never reads that field at all.
+
+**Explicitly out of scope for this addendum** (deferred, not rejected): long-session context
+compaction, a semantic outline/`ResponsePlan` mechanism, `fetch_url`, Constructor/worker
+orchestration, expanding the planning profile toward a build agent. See the final tranche report
+for the exact deferred-decision list and the Mac human-test procedure.
