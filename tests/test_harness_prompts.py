@@ -104,6 +104,16 @@ def test_planning_profile_prompt_names_only_its_own_typed_kinds():
     assert "write_file" not in prompt
 
 
+def test_planning_profile_prompt_discloses_search_repository_noise_exclusion():
+    """Capability truth extends to what search_repository will and won't surface
+    (siphonophore_core/execution_readonly.py's hardcoded-exclude + .gitignore filtering) -- the
+    model should not conclude a search "failed" just because .git/.venv/node_modules content it
+    can see via read_file/list_directory never turns up in search_repository matches."""
+    prompt = build_system_prompt(planning_profile(root="."))
+    assert ".gitignore" in prompt
+    assert "never searched" in prompt
+
+
 def test_planning_profile_prompt_forbids_artifact_code_entirely():
     prompt = build_system_prompt(planning_profile(root="."))
     assert "MUST NOT be present for any kind in this session" in prompt
@@ -113,6 +123,59 @@ def test_planning_profile_prompt_example_never_uses_artifact_code():
     prompt = build_system_prompt(planning_profile(root="."))
     example_line = next(line for line in prompt.splitlines() if '"operation": {"kind": "read_file"' in line)
     assert "artifact_code" not in example_line
+
+
+# ---- V1.1: the model must not be told it has a small per-turn operation budget -------------------
+# (the reproduced human-trial defect: the old wording ("within a bounded per-turn limit") primed
+# the model to ration/apologize for a multi-step investigation instead of just completing it).
+
+def test_prompt_does_not_claim_a_small_bounded_per_turn_operation_limit():
+    for prompt in (DEFAULT_SYSTEM_PROMPT, build_system_prompt(planning_profile(root="."))):
+        assert "bounded per-turn limit" not in prompt
+
+
+def test_prompt_encourages_requesting_as_many_operations_as_genuinely_needed():
+    for prompt in (DEFAULT_SYSTEM_PROMPT, build_system_prompt(planning_profile(root="."))):
+        assert "as many operations" in prompt
+        assert "safety-net" in prompt
+
+
+# ---- capability-truthful "consequence" field: KindExecutionPolicy profiles must not be told a ---
+# ---- caller-declared consequence tier drives execution-class routing, since it does not ---------
+
+def test_portable_profile_prompt_states_consequence_is_load_bearing():
+    """portable_profile() is ConsequencePolicy-routed: intent.consequence genuinely selects the
+    execution class, so the prompt's own honest-self-assessment framing is truthful here."""
+    prompt = build_system_prompt(portable_profile())
+    assert "no independent check behind it" in prompt
+    assert "NOT load-bearing" not in prompt
+
+
+def test_planning_profile_prompt_states_consequence_is_not_load_bearing():
+    """planning_profile() is KindExecutionPolicy-routed (composition.py): KindExecutionPolicy.
+    evaluate() never reads intent.consequence at all (policy.py) -- the prompt must say so, not
+    repeat the portable profile's "your honest assessment... this is currently taken as you
+    declare it" framing, which would actively mislead the model about what its own declared field
+    does in this session."""
+    prompt = build_system_prompt(planning_profile(root="."))
+    assert "NOT load-bearing in this session" in prompt
+    assert "no independent check behind it" not in prompt
+
+
+def test_planning_profile_prompt_does_not_call_the_kind_mapping_a_consequence_mapping():
+    """The KindExecutionPolicy mapping's keys are Intent.kind values (e.g. "read_file"), not
+    consequence tiers -- the capability-disclosure prose must not label it "consequence-to-
+    execution-class", which would misrepresent a kind as if it were a declared trust tier."""
+    prompt = build_system_prompt(planning_profile(root="."))
+    assert "consequence-to-execution-class" not in prompt
+    assert '"read_file" -> "read_file"' in prompt
+
+
+def test_portable_profile_prompt_still_calls_the_mapping_a_consequence_mapping():
+    """Regression guard for the branch above: portable_profile() (ConsequencePolicy) keeps its
+    existing, still-accurate "consequence-to-execution-class" wording."""
+    prompt = build_system_prompt(portable_profile())
+    assert "consequence-to-execution-class" in prompt
 
 
 # ---- work_order mechanism is always described, regardless of profile -----------------------------

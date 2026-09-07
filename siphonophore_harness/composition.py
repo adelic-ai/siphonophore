@@ -71,7 +71,19 @@ class ExecutionProfile:
     `"same_process"` via a declared consequence tier); for a `KindExecutionPolicy`-based profile
     (`compose_kind_profile()`) they coincide by construction. Exists so a capability-truthful
     prompt (`prompts.py`) can describe which OPERATIONS a session can request, not merely which
-    backends are registered underneath them."""
+    backends are registered underneath them.
+
+    `consequence_is_load_bearing` (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's capability-truthful
+    prompt work) states which `Policy` shape actually backs this profile, so a caller building
+    model-facing prose (`prompts.py`) never has to guess it from `policy_mapping`'s own `{str:
+    str}` shape (which looks identical either way). `True` for a `compose_profile()`-built profile:
+    `Intent.consequence` genuinely selects the execution class via a real, caller-declared trust
+    tier (`ConsequencePolicy.evaluate()`, policy.py). `False` for a `compose_kind_profile()`-built
+    profile: `KindExecutionPolicy.evaluate()` (policy.py) routes on `intent.kind` alone and never
+    reads `intent.consequence` at all -- the field is parsed and accepted (`intent_parsing.py`
+    still defaults it to `"low"`) but is structurally inert for this profile's own policy. Neither
+    value is a judgment about which shape is "better" -- it is a plain fact about which `Policy`
+    subclass this profile's `Gate` was constructed with."""
 
     name: str
     gate: Gate
@@ -80,6 +92,7 @@ class ExecutionProfile:
     execution_classes: tuple[str, ...]
     policy_mapping: Mapping[str, str]
     allowed_kinds: tuple[str, ...] = ()
+    consequence_is_load_bearing: bool = True
 
 
 def compose_profile(
@@ -118,6 +131,7 @@ def compose_profile(
         execution_classes=tuple(sorted(backends.keys())),
         policy_mapping=MappingProxyType(dict(policy_mapping)),
         allowed_kinds=tuple(effective_allowed_kinds),
+        consequence_is_load_bearing=True,
     )
 
 
@@ -179,6 +193,7 @@ def compose_kind_profile(
         execution_classes=tuple(sorted(backends.keys())),
         policy_mapping=MappingProxyType(dict(kind_mapping)),
         allowed_kinds=tuple(sorted(kind_mapping)),
+        consequence_is_load_bearing=False,
     )
 
 

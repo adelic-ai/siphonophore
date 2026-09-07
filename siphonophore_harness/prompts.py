@@ -22,10 +22,16 @@ from .intent_parsing import CODE_BEARING_KINDS
 
 _ENVELOPE_SCHEMA_PROMPT = """You are an agent with no direct ability to take any action. You cannot \
 write files, run code, fetch external content, or affect anything in the world by yourself. Your \
-only capability is to optionally describe ONE requested operation per turn, which a separate \
+only capability is to optionally describe ONE requested operation per response, which a separate \
 authorization system evaluates and, if permitted, carries out on your behalf. You will be told \
-what actually happened afterward, and may then answer the user's original question or -- within a \
-bounded per-turn limit -- request another operation.
+what actually happened afterward, and may then answer the user's original question or request \
+another operation -- request as many operations, in sequence, as you genuinely need to answer the \
+user's actual question well; there is no small budget to ration against, and a real, multi-step \
+investigation completing in one exchange is normal, not something to apologize for or cut short. \
+A very large safety-net ceiling exists purely as a backstop against a genuine runaway (requesting \
+far more operations than any ordinary question could need) -- it is not a per-question budget, and \
+an ordinary question will never come close to it. Stop requesting operations and answer as soon as \
+you actually have enough to answer -- not because of any operation count.
 
 Respond with a single JSON object and nothing else -- no markdown fence, nothing before or after \
 it. The object has these top-level fields, all independently optional, EXCEPT that "operation" and \
@@ -46,11 +52,7 @@ When "operation" is present, it must be an object with these fields:
 
   "kind": one of {kind_list}
   "payload": an object of parameters relevant to what you're doing (may be empty: {{}})
-  "consequence": one of "low", "high", "privileged" -- your honest assessment of how much \
-authority/risk this specific action requires. Be honest here: this is currently taken as you \
-declare it, with no independent check behind it -- there is no verification catching an \
-under-declared consequence, so getting this right is entirely on you assessing your own action \
-truthfully, not a safety net you can rely on.
+  "consequence": one of "low", "high", "privileged" -- {consequence_field_rule}
   "artifact_code": {artifact_code_rule}
 
 {kind_descriptions}
@@ -102,7 +104,11 @@ _KIND_DESCRIPTIONS = {
     ),
     "search_repository": (
         '"search_repository" searches for a regular-expression "pattern" (payload, REQUIRED) '
-        'across text files under the configured root, optionally narrowed with payload "path".'
+        'across text files under the configured root, optionally narrowed with payload "path". '
+        "Version-control/dependency/cache directories (.git, .venv, __pycache__, node_modules, "
+        "and similar) and anything the root's own .gitignore excludes are never searched -- a "
+        "missing match there means it was intentionally skipped as noise, not that the search "
+        "failed."
     ),
 }
 _UNKNOWN_KIND_DESCRIPTION = (
@@ -111,6 +117,24 @@ _UNKNOWN_KIND_DESCRIPTION = (
 )
 
 _EXAMPLE_ARTIFACT_CODE = "with open('/tmp/example.txt', 'w') as f:\\n    f.write('hello')"
+
+_CONSEQUENCE_FIELD_RULE_LOAD_BEARING = (
+    "your honest assessment of how much authority/risk this specific action requires. Be honest "
+    "here: this is currently taken as you declare it, with no independent check behind it -- "
+    "there is no verification catching an under-declared consequence, so getting this right is "
+    "entirely on you assessing your own action truthfully, not a safety net you can rely on."
+)
+_CONSEQUENCE_FIELD_RULE_INERT = (
+    "accepted for schema compatibility, but NOT load-bearing in this session: every kind you can "
+    "request here has a fixed, single execution path regardless of what you put here (see the "
+    "capability description below for the actual kind -> execution-class mapping this session "
+    "uses). Declare your honest assessment anyway if you have one, but do not expect it to change "
+    "what happens -- it does not."
+)
+
+
+def _consequence_field_rule(consequence_is_load_bearing: bool) -> str:
+    return _CONSEQUENCE_FIELD_RULE_LOAD_BEARING if consequence_is_load_bearing else _CONSEQUENCE_FIELD_RULE_INERT
 
 
 def _artifact_code_rule(allowed_kinds: tuple[str, ...]) -> str:
@@ -164,21 +188,42 @@ def _operation_example(allowed_kinds: tuple[str, ...]) -> str:
 
 
 def _capability_prose(profile: ExecutionProfile) -> str:
-    """Truthful, profile-derived capability disclosure -- distinguishes "this consequence tier is
-    policy-mapped to that execution class" (`profile.policy_mapping`, always true, substrate-
-    independent) from "that execution class is actually registered and can run something right
-    now" (`profile.execution_classes`, true only for backends this specific profile wired up).
-    Never claims a mapped-but-unregistered execution class (e.g. "uid_cgroup" under the portable
-    profile) is deliverable."""
+    """Truthful, profile-derived capability disclosure -- distinguishes "this is policy-mapped to
+    that execution class" (`profile.policy_mapping`, always true, substrate-independent) from
+    "that execution class is actually registered and can run something right now"
+    (`profile.execution_classes`, true only for backends this specific profile wired up). Never
+    claims a mapped-but-unregistered execution class (e.g. "uid_cgroup" under the portable
+    profile) is deliverable.
+
+    `profile.policy_mapping` has the identical `{str: str}` shape regardless of which `Policy`
+    backs the profile, but what the KEYS actually ARE differs: a declared consequence tier
+    (`"low"`/`"high"`/`"privileged"`) for a `ConsequencePolicy`-based profile, versus an
+    `Intent.kind` for a `KindExecutionPolicy`-based one (composition.py's own
+    `consequence_is_load_bearing` states which). Describing the latter as a "consequence-to-
+    execution-class" mapping would tell the model its own declared `consequence` field is what
+    selects the execution class here, which is false -- `KindExecutionPolicy.evaluate()` never
+    reads `intent.consequence` at all (policy.py). This branches on that same flag so the
+    vocabulary in the prompt matches which policy is actually active."""
     mapping_prose = ", ".join(
-        f'"{consequence}" -> "{execution_class}"' for consequence, execution_class in sorted(profile.policy_mapping.items())
+        f'"{key}" -> "{execution_class}"' for key, execution_class in sorted(profile.policy_mapping.items())
     )
     registered = ", ".join(sorted(profile.execution_classes))
     unavailable = sorted(set(profile.policy_mapping.values()) - set(profile.execution_classes))
 
+    if profile.consequence_is_load_bearing:
+        mapping_description = (
+            f"This session's active profile is {profile.name!r}. Its consequence-to-execution-class "
+            f"policy mapping is: {mapping_prose}."
+        )
+    else:
+        mapping_description = (
+            f"This session's active profile is {profile.name!r}. Each operation kind you can request "
+            f"has a fixed execution class, independent of the \"consequence\" field you declare "
+            f"(see that field's own description above): {mapping_prose}."
+        )
+
     lines = [
-        f"This session's active profile is {profile.name!r}. Its consequence-to-execution-class "
-        f"policy mapping is: {mapping_prose}.",
+        mapping_description,
         f"Only these execution classes are actually registered and available in this session "
         f"right now: {registered}.",
     ]
@@ -202,6 +247,7 @@ def build_system_prompt(profile: ExecutionProfile) -> str:
     kind_list = ", ".join(f'"{k}"' for k in sorted(allowed_kinds)) if allowed_kinds else "(none available in this session)"
     return _ENVELOPE_SCHEMA_PROMPT.format(
         kind_list=kind_list,
+        consequence_field_rule=_consequence_field_rule(profile.consequence_is_load_bearing),
         artifact_code_rule=_artifact_code_rule(allowed_kinds),
         kind_descriptions=_kind_descriptions_block(allowed_kinds),
         operation_example=_operation_example(allowed_kinds),
