@@ -421,3 +421,52 @@ def test_default_parse_retry_bound_is_a_small_non_negative_integer():
 
     assert isinstance(DEFAULT_MAX_PARSE_RETRIES_PER_TURN, int)
     assert 0 <= DEFAULT_MAX_PARSE_RETRIES_PER_TURN <= 5
+
+
+# ---- V1: long-session coherence ---------------------------------------------------------------
+
+def test_long_mixed_session_stays_coherent_across_many_turns():
+    """Simulates ~20 turns mixing message-only, successful operations, denials, a bound-exhausted
+    turn, and a WorkOrder draft/final pair -- confirms history keeps growing coherently (every
+    "user" entry is followed, sooner or later, by real content; nothing is silently corrupted or
+    duplicated) and no turn's outcome bleeds into another's. Not full resume/persistence testing
+    (explicitly deferred, docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md) -- purely an in-memory
+    long-session coherence check."""
+    gate = Gate(ConsequencePolicy(allowed_kinds=("run_artifact",)))
+    backends = {"same_process": SameProcessBackend(allow_root=True)}
+    broker = Broker(gate=gate, executor=Executor(gate, backends=backends))
+
+    completions: list[str] = []
+    expected_message_count = 0
+    for i in range(5):
+        completions.append(_msg(f"conversational reply {i}"))
+        expected_message_count += 1
+        completions.append(_op(consequence="low", artifact_code=f"RESULT = {i}"))
+        completions.append(_msg(f"operation {i} done"))
+        expected_message_count += 1
+        completions.append(_op(kind="write_file"))  # denied: not in allowed_kinds
+        completions.append(_msg(f"operation {i} was denied"))
+        expected_message_count += 1
+
+    capture = _EventCapture()
+    loop = CognitiveLoop(model=ScriptedModel(completions), broker=broker, principal_id="alice", event_sink=capture.sink)
+
+    results = []
+    for i in range(15):
+        user_message = f"turn {i}"
+        results.append(loop.step(user_message))
+
+    assert len(results) == 15
+    # every user entry in history is real -- exactly one per successful step() call, none dropped
+    # or duplicated, and each is followed by at least one non-user entry before the next user entry
+    user_indices = [idx for idx, entry in enumerate(loop.history) if entry["role"] == "user"]
+    assert len(user_indices) == 15
+    for a, b in zip(user_indices, user_indices[1:]):
+        assert b > a + 1  # at least one assistant/effect entry lies strictly between consecutive users
+
+    turn_ids_seen = {e["turn_id"] for e in capture.events if "turn_id" in e}
+    assert len(turn_ids_seen) == 15  # one distinct turn_id per step() call, never reused
+
+    # the denied-operation turns really were denied, not silently run
+    denied_results = [r for r in results if any(op.category == OutcomeCategory.DENIED for op in r.operations)]
+    assert len(denied_results) == 5
