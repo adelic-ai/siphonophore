@@ -145,11 +145,21 @@ class TurnResult:
     placeholder), and holds one `OperationOutcome` per independently-mediated `Broker.dispatch()`
     attempt otherwise, in dispatch order.
 
-    `exhausted` is True only when the per-turn operation bound (`CognitiveLoop`'s own
-    `max_operations_per_turn`) ended the turn before the model produced a final message -- the
+    `exhausted` is True only when the per-turn SAFETY-NET ceiling (`CognitiveLoop`'s own
+    `max_operations_per_turn_safety_net` -- docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's V1.1
+    turn-termination redesign) ended the turn before the model produced a final message -- the
     operation that would have exceeded the bound was never dispatched, never mediated; whatever the
     model said alongside that refused request (if anything) is `message`, shown honestly rather
-    than fabricated or silently dropped.
+    than fabricated or silently dropped. This is a genuine-anomaly signal, deliberately sized to be
+    rare: an ordinary multi-observation turn completes via the zero-operation/`work_order` path
+    below, never by reaching this ceiling.
+
+    `loop_detected` is True only when the repeated-identical-operation detector
+    (`repeated_operation_limit`) ended the turn -- N consecutive requests naming the exact same
+    (kind, consequence, payload, artifact_code) look like a mechanical retry loop, not distinct
+    observations. Independently scoped from `exhausted`: both are anomaly backstops, never the
+    primary way a turn ends, and never true at the same time in practice (the repeat detector's
+    threshold is always reached, if at all, well before the much larger safety net).
 
     `work_order` is non-None exactly when this turn's completion named a `work_order` field
     (`intent_parsing.py`, `work_order.py`) -- mutually exclusive with `operations` being non-empty
@@ -161,6 +171,7 @@ class TurnResult:
     operations: tuple["OperationOutcome", ...]
     exhausted: bool
     work_order: WorkOrder | None = None
+    loop_detected: bool = False
 
 
 class OutcomeCategory(str, Enum):

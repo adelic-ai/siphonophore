@@ -8,10 +8,26 @@ any capability to touch the outside world. Never imports os, subprocess, socket,
 effect-producing stdlib module -- there is no capability in this file to touch the outside world
 except `broker.dispatch(intent, authority=...)`, which always goes through
 Gate.submit() -> Executor.execute() (broker.py), called independently, fresh, once per requested
-operation -- never batched, cached, or reused across cycles. `max_operations_per_turn` is an inert
-integer this class compares against a running count before ever calling `broker.dispatch()`; it is
-not a capability, and it cannot be widened, read, or influenced by anything in the model's
-completion (the bound is a harness-side check, never a field the model's JSON can name).
+operation -- never batched, cached, or reused across cycles. `max_operations_per_turn_safety_net`/
+`repeated_operation_limit` are inert integers this class compares against running counts before
+ever calling `broker.dispatch()`; neither is a capability, and neither can be widened, read, or
+influenced by anything in the model's completion (both bounds are harness-side checks, never a
+field the model's JSON can name).
+
+**Logical-turn termination vs. resource/runaway backstops (V1.1 redesign,
+docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md).** A logical user turn ends the moment the model
+produces a real completion signal -- a message naming no further `"operation"`, or a compiled
+`work_order` -- never merely because some number of operations happened. V1's
+`max_operations_per_turn=4` conflated a resource guardrail with that completion signal, ending
+turns mid-reasoning on ordinary multi-observation questions. Two independently-scoped anomaly
+backstops exist instead, neither of which is the primary way a turn ends: a deliberately generous
+`max_operations_per_turn_safety_net` (a genuine-runaway ceiling, sized to be reached only by a real
+anomaly, never by routine work) and a narrower `repeated_operation_limit` (N consecutive requests
+naming the exact same operation is a mechanical retry loop, not "many different reasonable
+observations"). `TurnResult.exhausted` means the safety net fired; `TurnResult.loop_detected` means
+the repeat detector fired -- distinct in kind, never conflated, because an operator/model
+diagnosing "why did this turn end" needs to tell a real anomaly apart from ordinary multi-cycle
+completion, which reaches neither field.
 
 `event_sink`, if given, is likewise inert on its own: a plain callable this class invokes with
 already-built, harness-authored dict payloads -- never a path, a file handle, or any object with a
@@ -26,8 +42,8 @@ never constructs one for its own logging.
 
 `test_harness_structural_proof.py` enforces the effect-producing-import property by static
 analysis, not just convention, and further asserts that `CognitiveLoop.__init__` accepts nothing
-beyond `model`, `broker`, `principal_id`, `authority`, `max_operations_per_turn`,
-`max_parse_retries_per_turn`, `event_sink`.
+beyond `model`, `broker`, `principal_id`, `authority`, `max_operations_per_turn_safety_net`,
+`repeated_operation_limit`, `max_parse_retries_per_turn`, `event_sink`.
 
 This is DESIGN.md section 7's proof, made structural rather than merely asserted in prose: the
 only object this class holds that can produce an Effect is a Broker, and a Broker's only public
@@ -77,10 +93,28 @@ from .intent_parsing import IntentParseError, parse_turn
 from .model import Model
 from .outcome import OperationOutcome, OutcomeCategory, TurnResult, classify_outcome
 
-# V1 default (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md's Boundedness section): a provisional,
-# owner-tunable constant, not an architectural ceiling -- any small, positive integer satisfies the
-# design equally well. Counts Broker.dispatch() attempts, regardless of outcome.
-DEFAULT_MAX_OPERATIONS_PER_TURN = 4
+# V1.1 (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's turn-termination redesign): a SAFETY-NET
+# ceiling, not a logical-completion signal -- the real completion signal is, and always was,
+# `parsed.intent is None`/a compiled `work_order` (below). V1's `DEFAULT_MAX_OPERATIONS_PER_TURN =
+# 4` conflated the two: it fired mid-reasoning on an ordinary multi-observation task exactly as
+# readily as on a genuine runaway, because 4 was small enough to be routinely reached by legitimate
+# work. This constant is deliberately generous -- an order of magnitude above V1's -- so it is
+# reached only by a genuine anomaly (a model requesting far more operations than any ordinary
+# question needs), never by routine multi-file inspection. Counts Broker.dispatch() ATTEMPTS,
+# regardless of outcome (unchanged from V1). Siphonophore's own operations are individually more
+# consequential than a typical tool call in a harness with a much larger, much more numerous
+# operation vocabulary (research/factory-harness-study/CROSS_HARNESS_SYNTHESIS.md D1) -- while
+# still being "large and rarely-hit" in kind, not "a small number that routine work will reach."
+DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET = 50
+
+# A narrower, independently-scoped anomaly detector: N consecutive (kind, consequence, payload,
+# artifact_code)-identical operation REQUESTS within one turn (whether or not each one was actually
+# dispatched) is treated as a mechanical retry loop, distinct in kind from "the model has many
+# different, individually reasonable observations to make" (which this constant must never
+# penalize -- reading N different files is not a loop just because it is N operations).
+# Deliberately much smaller than the safety net above: a genuine repeated-identical-request loop is
+# diagnosable far earlier than "this turn is taking an unreasonable number of operations overall."
+DEFAULT_REPEATED_OPERATION_LIMIT = 3
 
 # Separate from the operation bound above -- a malformed completion never reaches Broker.dispatch()
 # at all, so it consumes a different resource (model round-trips spent self-correcting, not
@@ -116,7 +150,8 @@ class CognitiveLoop:
         broker: Broker,
         principal_id: str,
         authority: Authority | None = None,
-        max_operations_per_turn: int = DEFAULT_MAX_OPERATIONS_PER_TURN,
+        max_operations_per_turn_safety_net: int = DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET,
+        repeated_operation_limit: int = DEFAULT_REPEATED_OPERATION_LIMIT,
         max_parse_retries_per_turn: int = DEFAULT_MAX_PARSE_RETRIES_PER_TURN,
         event_sink: EventSink | None = None,
     ) -> None:
@@ -124,7 +159,8 @@ class CognitiveLoop:
         self._broker = broker
         self._principal_id = principal_id
         self._authority = authority
-        self._max_operations_per_turn = max_operations_per_turn
+        self._max_operations_per_turn_safety_net = max_operations_per_turn_safety_net
+        self._repeated_operation_limit = repeated_operation_limit
         self._max_parse_retries_per_turn = max_parse_retries_per_turn
         self._event_sink = event_sink
         self.history: list[dict] = []
@@ -143,8 +179,9 @@ class CognitiveLoop:
 
     def step(self, user_message: str) -> TurnResult:
         """One user turn: zero or more bounded, independently mediated operation/result cycles
-        until the model produces a message-only completion, compiles a WorkOrder, the per-turn
-        operation bound is reached, or a completion/model-transport failure ends the turn.
+        until the model produces a message-only completion, compiles a WorkOrder, an anomaly
+        backstop (the safety net or the repeated-operation detector) fires, or a completion/
+        model-transport failure ends the turn.
 
         See this module's own docstring for the transactional history model. `self.last_message`/
         `self.last_completion`/`self.last_diagnostics` are reset at the start of every call and
@@ -171,6 +208,8 @@ class CognitiveLoop:
         operations: list[OperationOutcome] = []
         cycle_index = 0
         parse_retries_used = 0
+        last_operation_signature: tuple | None = None
+        consecutive_repeat_count = 0
         while True:
             cycle_id = str(uuid.uuid4())
             if cycle_index > 0:
@@ -235,7 +274,7 @@ class CognitiveLoop:
                 self._emit(event_type, turn_id=turn_id, cycle_id=cycle_id, work_order=parsed.work_order.to_dict())
                 self._emit(
                     "turn.completed", turn_id=turn_id, operation_count=len(operations),
-                    exhausted=False, work_order_id=parsed.work_order.work_order_id,
+                    exhausted=False, loop_detected=False, work_order_id=parsed.work_order.work_order_id,
                 )
                 return TurnResult(
                     message=parsed.message, operations=tuple(operations), exhausted=False,
@@ -246,17 +285,70 @@ class CognitiveLoop:
                 working_history.append({"role": "assistant", "content": completion})
                 working_history.append({"role": "effect", "content": "no operation requested this turn"})
                 commit()
-                self._emit("turn.completed", turn_id=turn_id, operation_count=len(operations), exhausted=False)
+                self._emit(
+                    "turn.completed", turn_id=turn_id, operation_count=len(operations),
+                    exhausted=False, loop_detected=False,
+                )
                 return TurnResult(message=parsed.message, operations=tuple(operations), exhausted=False)
 
-            if len(operations) >= self._max_operations_per_turn:
+            # Safety-net ceiling (DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET, module docstring
+            # above): a genuine anomaly backstop, never the primary logical-completion signal --
+            # that signal is, and always was, `parsed.intent is None`/a compiled `work_order`
+            # above. Deliberately generous, so ordinary multi-observation work never reaches it.
+            if len(operations) >= self._max_operations_per_turn_safety_net:
                 working_history.append({"role": "assistant", "content": completion})
-                working_history.append({"role": "effect", "content": "operation limit reached this turn"})
+                working_history.append({
+                    "role": "effect",
+                    "content": (
+                        f"operation safety-net limit reached this turn "
+                        f"({self._max_operations_per_turn_safety_net} operations) -- this is a "
+                        "runaway backstop, not an ordinary per-task budget"
+                    ),
+                })
                 commit()
-                self._emit("turn.completed", turn_id=turn_id, operation_count=len(operations), exhausted=True)
+                self._emit(
+                    "turn.completed", turn_id=turn_id, operation_count=len(operations),
+                    exhausted=True, loop_detected=False,
+                )
                 return TurnResult(message=parsed.message, operations=tuple(operations), exhausted=True)
 
             intent = parsed.intent
+
+            # Repeated-identical-operation detection (DEFAULT_REPEATED_OPERATION_LIMIT, module
+            # docstring above): a narrower, independently-scoped anomaly -- N consecutive requests
+            # naming the exact same (kind, consequence, payload, artifact_code) is a mechanical
+            # retry loop, not "many different reasonable observations" (which must never trip
+            # this). Checked, and refused, BEFORE this Nth repeat is ever dispatched -- the first
+            # N-1 identical requests are dispatched for real (a model retrying once or twice is
+            # not yet a loop); only the Nth consecutive one is refused.
+            signature = (intent.kind, intent.consequence, intent.payload, intent.artifact_code)
+            if signature == last_operation_signature:
+                consecutive_repeat_count += 1
+            else:
+                consecutive_repeat_count = 1
+                last_operation_signature = signature
+
+            if consecutive_repeat_count >= self._repeated_operation_limit:
+                working_history.append({"role": "assistant", "content": completion})
+                working_history.append({
+                    "role": "effect",
+                    "content": (
+                        f"the same operation (kind={intent.kind!r}) was requested "
+                        f"{consecutive_repeat_count} times in a row -- refusing to dispatch it "
+                        "again this turn; this looks like a mechanical retry loop, not distinct "
+                        "observations, so the turn is ending here"
+                    ),
+                })
+                commit()
+                self._emit(
+                    "turn.completed", turn_id=turn_id, operation_count=len(operations),
+                    exhausted=False, loop_detected=True,
+                )
+                return TurnResult(
+                    message=parsed.message, operations=tuple(operations), exhausted=False,
+                    loop_detected=True,
+                )
+
             self._emit(
                 "operation.requested", turn_id=turn_id, cycle_id=cycle_id, intent_id=intent.intent_id,
                 kind=intent.kind, consequence=intent.consequence,

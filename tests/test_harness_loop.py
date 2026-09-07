@@ -82,8 +82,11 @@ def _make_loop_with_broker(completions: list[str], broker, **kwargs) -> Cognitiv
     return CognitiveLoop(model=ScriptedModel(completions), broker=broker, principal_id="alice", **kwargs)
 
 
-def _op(kind="run_artifact", consequence="low", artifact_code="pass", message=None):
-    body = {"operation": {"kind": kind, "consequence": consequence, "artifact_code": artifact_code}}
+def _op(kind="run_artifact", consequence="low", artifact_code="pass", payload=None, message=None):
+    operation = {"kind": kind, "consequence": consequence, "artifact_code": artifact_code}
+    if payload is not None:
+        operation["payload"] = payload
+    body = {"operation": operation}
     if message is not None:
         body["message"] = message
     return json.dumps(body)
@@ -269,36 +272,110 @@ def test_multiple_operations_are_each_independently_dispatched_in_order():
     assert all(o.category == OutcomeCategory.EXECUTED for o in result.operations)
 
 
-# ---- hard per-turn operation bound ---------------------------------------------------------------
+# ---- safety-net ceiling: a genuine-anomaly backstop, never the primary completion signal ---------
 
-def test_hard_operation_bound_refuses_the_n_plus_first_operation_before_dispatch():
+def test_safety_net_refuses_the_n_plus_first_operation_before_dispatch():
     gate = Gate(ConsequencePolicy())
     real_broker = Broker(gate=gate, executor=Executor(gate, backends={"same_process": SameProcessBackend(allow_root=True)}))
     counting_broker = _CountingRealBroker(real_broker)
     loop = _make_loop_with_broker(
-        [_op(), _op(message="trying again")], counting_broker, max_operations_per_turn=1,
+        [_op(), _op(message="trying again")], counting_broker, max_operations_per_turn_safety_net=1,
     )
 
     result = loop.step("do two things")
 
     assert counting_broker.call_count == 1  # the second operation never reached Broker.dispatch() at all
     assert result.exhausted is True
+    assert result.loop_detected is False  # a distinct anomaly, not this one
     assert len(result.operations) == 1
     assert result.message == "trying again"  # honestly shown, not fabricated or dropped
 
 
-def test_operation_count_within_the_bound_is_not_refused():
-    loop = _make_loop([_op(), _msg("done")], max_operations_per_turn=1)
+def test_operation_count_within_the_safety_net_is_not_refused():
+    loop = _make_loop([_op(), _msg("done")], max_operations_per_turn_safety_net=1)
     result = loop.step("do one thing")
     assert result.exhausted is False
     assert len(result.operations) == 1
 
 
-def test_default_operation_bound_is_a_small_positive_integer():
-    from siphonophore_harness.loop import DEFAULT_MAX_OPERATIONS_PER_TURN
+def test_default_safety_net_is_a_generous_positive_integer():
+    """V1.1's redesign (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md): the safety net must be large
+    enough that it is never routinely reached by ordinary multi-observation work -- the exact
+    failure mode V1's small `max_operations_per_turn=4` had. "Generous" is asserted here as
+    "comfortably larger than any single ordinary planning question needs", not a specific number
+    this test pins down (an owner-tunable constant, per the module's own docstring)."""
+    from siphonophore_harness.loop import DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET
 
-    assert isinstance(DEFAULT_MAX_OPERATIONS_PER_TURN, int)
-    assert DEFAULT_MAX_OPERATIONS_PER_TURN > 0
+    assert isinstance(DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET, int)
+    assert DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET >= 20
+
+
+def test_a_realistic_multi_observation_task_completes_in_one_turn_without_hitting_the_safety_net():
+    """The direct fix for the reproduced human-trial defect: a legitimate task needing MORE
+    observations than V1's old fixed budget (4) must still complete naturally in the same logical
+    user turn, with no manual follow-up prompt required, using CognitiveLoop's own default
+    settings (no per-test override)."""
+    reads = [
+        _op(payload={"path": f"file{i}.py"}, message=f"checking file{i}")
+        for i in range(8)
+    ]
+    loop = _make_loop(reads + [_msg("Based on all eight files, here is the answer.")])
+
+    result = loop.step("please inspect these eight files and answer my question")
+
+    assert result.exhausted is False
+    assert result.loop_detected is False
+    assert len(result.operations) == 8
+    assert result.message == "Based on all eight files, here is the answer."
+
+
+# ---- repeated-identical-operation detection: a narrower, independently-scoped anomaly ------------
+
+def test_repeated_identical_operation_is_detected_and_refused_before_the_nth_dispatch():
+    repeats = [_op(payload={"path": "same.py"}, message=f"attempt {i}") for i in range(4)]
+    loop = _make_loop(repeats, repeated_operation_limit=3)
+
+    result = loop.step("keep trying the same thing")
+
+    assert result.loop_detected is True
+    assert result.exhausted is False
+    assert len(result.operations) == 2  # the first two identical requests dispatched for real
+    assert result.message == "attempt 2"  # the message alongside the refused 3rd (0-indexed) attempt
+
+
+def test_repeated_identical_operation_does_not_trip_on_distinct_operations():
+    """The negative case that matters most: N different, individually legitimate observations
+    (different payloads) must never be misclassified as a loop, however many there are."""
+    reads = [_op(payload={"path": f"distinct{i}.py"}, message=f"reading {i}") for i in range(5)]
+    loop = _make_loop(reads + [_msg("done reading distinct files")], repeated_operation_limit=3)
+
+    result = loop.step("read these distinct files")
+
+    assert result.loop_detected is False
+    assert len(result.operations) == 5
+
+
+def test_repeated_operation_count_resets_after_a_distinct_operation():
+    ops = [
+        _op(payload={"path": "a.py"}, message="a-1"),
+        _op(payload={"path": "a.py"}, message="a-2"),
+        _op(payload={"path": "b.py"}, message="b-1"),  # different payload: resets the streak
+        _op(payload={"path": "b.py"}, message="b-2"),
+        _msg("done"),
+    ]
+    loop = _make_loop(ops, repeated_operation_limit=3)
+
+    result = loop.step("mixed requests")
+
+    assert result.loop_detected is False
+    assert len(result.operations) == 4
+
+
+def test_default_repeated_operation_limit_is_a_small_positive_integer():
+    from siphonophore_harness.loop import DEFAULT_REPEATED_OPERATION_LIMIT
+
+    assert isinstance(DEFAULT_REPEATED_OPERATION_LIMIT, int)
+    assert DEFAULT_REPEATED_OPERATION_LIMIT > 0
 
 
 # ---- CognitiveLoop holding a delegated Authority (within scope) ----------------------------------

@@ -253,13 +253,15 @@ def test_I_integrity_rejection_fails_closed_but_commits_the_attempt():
 
 def test_J_operation_bound_exhaustion_commits_history_with_an_honest_limit_marker():
     capture = _EventCapture()
-    loop = _make_loop([_op(), _op(message="trying again")], sink=capture.sink, max_operations_per_turn=1)
+    loop = _make_loop(
+        [_op(), _op(message="trying again")], sink=capture.sink, max_operations_per_turn_safety_net=1,
+    )
     result = loop.step("do two things")
     assert result.exhausted is True
     assert result.message == "trying again"
     roles = [e["role"] for e in loop.history]
     assert roles == ["user", "assistant", "effect", "assistant", "effect"]
-    assert loop.history[-1]["content"] == "operation limit reached this turn"
+    assert "operation safety-net limit reached this turn" in loop.history[-1]["content"]
     turn_completed = [e for e in capture.events if e["event"] == "turn.completed"]
     assert turn_completed[-1]["exhausted"] is True
 

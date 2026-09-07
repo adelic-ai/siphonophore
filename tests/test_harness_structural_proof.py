@@ -50,8 +50,9 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     itself (that needs a Gate reference, which this signature still excludes), and it does not add
     a second path to an effect.
 
-    `max_operations_per_turn` (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) is likewise allowed:
-    a plain integer this class compares against a running count before ever calling
+    `max_operations_per_turn_safety_net`/`repeated_operation_limit`
+    (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's V1.1 turn-termination redesign) are likewise
+    allowed: plain integers this class compares against running counts before ever calling
     broker.dispatch() -- not a capability, not something the model's completion can name or
     influence, and not a second path to an effect either.
 
@@ -72,6 +73,6 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     sig = inspect.signature(loop.CognitiveLoop.__init__)
     param_names = set(sig.parameters) - {"self"}
     assert param_names == {
-        "model", "broker", "principal_id", "authority", "max_operations_per_turn",
-        "max_parse_retries_per_turn", "event_sink",
+        "model", "broker", "principal_id", "authority", "max_operations_per_turn_safety_net",
+        "repeated_operation_limit", "max_parse_retries_per_turn", "event_sink",
     }

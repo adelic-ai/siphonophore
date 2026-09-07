@@ -6,11 +6,13 @@ conversational interface whose only unusual property is that every real effect i
 explicit and mediated. Most turns are pure conversation -- no Intent, no Decision, no trace. When
 the model requests a mediated observational operation (--profile planning, the default: read_file/
 list_directory/search_repository, read-only, root-confined), the result returns to the model, which
-may then answer the original question or, within a bounded per-turn limit, request another
-operation (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md). Once a conversation converges on a fully
-specified piece of work, the model may compile a WorkOrder -- a self-contained specification for a
-future, still-unbuilt Constructor to realize; compiling one never itself performs work or grants
-authority.
+may then answer the original question or request as many further operations as it genuinely needs
+-- a real multi-observation task completes in one logical turn, with no small per-turn budget to
+ration against (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's V1.1 addendum). A generous safety net
+and a repeated-identical-operation detector exist purely as anomaly backstops, not an ordinary
+per-task limit. Once a conversation converges on a fully specified piece of work, the model may
+compile a WorkOrder -- a self-contained specification for a future, still-unbuilt Constructor to
+realize; compiling one never itself performs work or grants authority.
 
 By default this prints the model's final conversational text, then one compact trace line per
 operation actually dispatched this turn (outcome category, intent_id, execution_class); a turn that
@@ -295,7 +297,15 @@ def render_turn(
         lines.append("")
         lines.extend(render_operation_outcome(outcome) for outcome in result.operations)
     if result.exhausted:
-        lines.append(f"  [operation limit reached] {len(result.operations)} operations attempted this turn")
+        lines.append(
+            f"  [operation safety-net reached] {len(result.operations)} operations attempted this "
+            "turn -- this is a runaway backstop, not an ordinary per-task budget"
+        )
+    if result.loop_detected:
+        lines.append(
+            f"  [repeated operation detected] {len(result.operations)} operations attempted this "
+            "turn before the same request repeated too many times in a row"
+        )
     if result.work_order is not None:
         lines.append("")
         lines.append(render_work_order(result.work_order))
@@ -406,8 +416,18 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--max-operations-per-turn", type=int, default=None,
-        help="hard per-turn mediated-operation bound (default: CognitiveLoop's own default, currently 4)",
+        "--max-operations-per-turn-safety-net", type=int, default=None,
+        help=(
+            "runaway backstop only, not an ordinary per-task budget -- an anomalously long turn "
+            "ends here (default: CognitiveLoop's own default)"
+        ),
+    )
+    parser.add_argument(
+        "--repeated-operation-limit", type=int, default=None,
+        help=(
+            "how many consecutive identical operation requests within one turn are treated as a "
+            "mechanical retry loop and refused (default: CognitiveLoop's own default)"
+        ),
     )
     args = parser.parse_args()
 
@@ -434,8 +454,10 @@ def main() -> int:
     )
 
     loop_kwargs = {}
-    if args.max_operations_per_turn is not None:
-        loop_kwargs["max_operations_per_turn"] = args.max_operations_per_turn
+    if args.max_operations_per_turn_safety_net is not None:
+        loop_kwargs["max_operations_per_turn_safety_net"] = args.max_operations_per_turn_safety_net
+    if args.repeated_operation_limit is not None:
+        loop_kwargs["repeated_operation_limit"] = args.repeated_operation_limit
     loop = CognitiveLoop(
         model=model, broker=profile.broker, principal_id=args.principal_id, authority=authority,
         event_sink=event_log.sink, **loop_kwargs,

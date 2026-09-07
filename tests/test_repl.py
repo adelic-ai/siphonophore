@@ -263,7 +263,7 @@ def test_render_turn_of_multiple_operations_shows_one_trace_line_each_in_order()
     assert "reason=intent was not permitted by policy" in rendered
 
 
-def test_render_turn_of_an_exhausted_turn_shows_a_distinct_limit_reached_line():
+def test_render_turn_of_an_exhausted_turn_shows_a_distinct_safety_net_line():
     outcome = OperationOutcome(
         intent_id="i-a", category=OutcomeCategory.EXECUTED, execution_class="same_process",
         authority_id=None, order_id=None, detail={}, reason=None,
@@ -272,10 +272,25 @@ def test_render_turn_of_an_exhausted_turn_shows_a_distinct_limit_reached_line():
 
     rendered = repl.render_turn(turn_result, verbose=False)
 
-    assert "[operation limit reached]" in rendered
+    assert "[operation safety-net reached]" in rendered
     assert "1 operations attempted this turn" in rendered
     for label in repl._CATEGORY_LABELS.values():
-        assert f"[operation limit reached]" != f"[{label}]"  # never confusable with a real OutcomeCategory label
+        assert "[operation safety-net reached]" != f"[{label}]"  # never confusable with a real OutcomeCategory label
+
+
+def test_render_turn_of_a_loop_detected_turn_shows_a_distinct_line():
+    outcome = OperationOutcome(
+        intent_id="i-a", category=OutcomeCategory.EXECUTED, execution_class="same_process",
+        authority_id=None, order_id=None, detail={}, reason=None,
+    )
+    turn_result = TurnResult(
+        message="stop repeating yourself", operations=(outcome,), exhausted=False, loop_detected=True,
+    )
+
+    rendered = repl.render_turn(turn_result, verbose=False)
+
+    assert "[repeated operation detected]" in rendered
+    assert "[operation safety-net reached]" not in rendered
 
 
 def test_render_operation_outcome_omits_execution_class_for_authority_rejected():
@@ -618,7 +633,11 @@ def test_cli_has_profile_flag_defaulting_to_planning():
 
 def test_cli_has_root_session_log_and_operation_bound_flags():
     source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
-    for flag in ("--root", "--session-log", "--no-session-log", "--max-operations-per-turn"):
+    flags = (
+        "--root", "--session-log", "--no-session-log",
+        "--max-operations-per-turn-safety-net", "--repeated-operation-limit",
+    )
+    for flag in flags:
         assert f'"{flag}"' in source
 
 
