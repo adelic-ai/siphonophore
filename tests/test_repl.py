@@ -27,8 +27,9 @@ from siphonophore_core.execution import ArtifactMismatchError, DecisionVerificat
 from siphonophore_core.intent import Intent
 from siphonophore_core.mediation import GateViolation
 from siphonophore_core.policy import ConsequencePolicy
-from siphonophore_harness.composition import compose_profile, portable_profile
+from siphonophore_harness.composition import compose_profile, planning_profile, portable_profile
 from siphonophore_harness.intent_parsing import IntentParseError
+from siphonophore_harness.work_order import WorkOrder
 from siphonophore_harness.model_anthropic import ModelResponseDiagnostics
 from siphonophore_harness.outcome import OperationOutcome, OutcomeCategory, TurnResult
 
@@ -578,3 +579,90 @@ def test_render_outcome_error_unknown_internal_state_is_not_mislabeled():
     assert "RuntimeError" in rendered and "boom" in rendered
     for label in repl._CATEGORY_LABELS.values():
         assert f"[{label}]" not in rendered
+
+
+# ---- V1: capability-truthful startup banner shows allowed_kinds and session log info -------------
+
+def test_startup_banner_shows_allowed_kinds_for_planning_profile():
+    profile = planning_profile(root=".")
+    banner = repl.render_startup_banner(profile, model_id="claude-x", principal_id="human-operator", authority=None)
+    assert "allowed operation kinds: list_directory, read_file, search_repository" in banner
+
+
+def test_startup_banner_shows_session_log_path_when_enabled():
+    profile = portable_profile()
+    banner = repl.render_startup_banner(
+        profile, model_id="claude-x", principal_id="human-operator", authority=None,
+        session_id="abc123", session_log_path="siphonophore-sessions/abc123.jsonl",
+    )
+    assert "session_id=abc123" in banner
+    assert "siphonophore-sessions/abc123.jsonl" in banner
+
+
+def test_startup_banner_shows_disabled_when_no_session_log_path():
+    profile = portable_profile()
+    banner = repl.render_startup_banner(
+        profile, model_id="claude-x", principal_id="human-operator", authority=None,
+        session_id="abc123", session_log_path=None,
+    )
+    assert "DISABLED" in banner
+
+
+# ---- V1: CLI surface for profile/root/session-log/operation-bound selection -----------------------
+
+def test_cli_has_profile_flag_defaulting_to_planning():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    assert '"--profile"' in source
+    assert 'default="planning"' in source
+
+
+def test_cli_has_root_session_log_and_operation_bound_flags():
+    source = (Path(__file__).resolve().parent.parent / "examples" / "repl.py").read_text()
+    for flag in ("--root", "--session-log", "--no-session-log", "--max-operations-per-turn"):
+        assert f'"{flag}"' in source
+
+
+# ---- V1: WorkOrder rendering ------------------------------------------------------------------
+
+def _work_order(status="final", **overrides):
+    fields = dict(
+        work_order_id="wo-1", status=status, objective="add a feature",
+        prompt="implement X exactly as discussed",
+    )
+    fields.update(overrides)
+    return WorkOrder(**fields)
+
+
+def test_render_work_order_shows_status_objective_and_prompt():
+    rendered = repl.render_work_order(_work_order())
+    assert "work_order:final" in rendered
+    assert "add a feature" in rendered
+    assert "implement X exactly as discussed" in rendered
+
+
+def test_render_work_order_states_it_grants_no_authority():
+    rendered = repl.render_work_order(_work_order())
+    assert "grants no authority" in rendered
+
+
+def test_render_work_order_shows_nonempty_optional_fields_only():
+    wo = _work_order(requirements=("req1",), constraints=())
+    rendered = repl.render_work_order(wo)
+    assert "requirements: ['req1']" in rendered
+    assert "constraints:" not in rendered  # empty tuple -- omitted, not shown as []
+
+
+def test_render_turn_shows_work_order_after_message():
+    from siphonophore_harness.outcome import TurnResult
+
+    result = TurnResult(message="Here's the compiled plan.", operations=(), exhausted=False, work_order=_work_order())
+    rendered = repl.render_turn(result, verbose=False)
+    assert rendered.index("Here's the compiled plan.") < rendered.index("work_order:final")
+
+
+def test_render_turn_of_message_only_result_has_no_work_order_section():
+    from siphonophore_harness.outcome import TurnResult
+
+    result = TurnResult(message="hi", operations=(), exhausted=False, work_order=None)
+    rendered = repl.render_turn(result, verbose=False)
+    assert "work_order" not in rendered
