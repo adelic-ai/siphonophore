@@ -16,7 +16,13 @@ from siphonophore_core.intent import Effect, Intent
 from siphonophore_core.mediation import Gate
 from siphonophore_core.policy import ConsequencePolicy
 from siphonophore_harness.broker import Broker
-from siphonophore_harness.composition import ExecutionProfile, compose_profile, portable_profile
+from siphonophore_harness.composition import (
+    ExecutionProfile,
+    compose_kind_profile,
+    compose_profile,
+    planning_profile,
+    portable_profile,
+)
 
 
 class _CountingBackend(ExecutionBackend):
@@ -184,3 +190,68 @@ def test_compose_profile_accepts_a_custom_backend_and_policy_mapping():
     result = profile.broker.dispatch(intent)
     assert result.execution_class == "custom_tier"
     assert counting.call_count == 1
+
+
+# ---- planning profile: typed observational operations only, no code-execution backend ----------
+
+def test_planning_profile_registers_only_observational_backends():
+    profile = planning_profile(root=".")
+    assert set(profile.execution_classes) == {"read_file", "list_directory", "search_repository"}
+    assert "same_process" not in profile.execution_classes
+    assert "separate_process" not in profile.execution_classes
+    assert set(profile.allowed_kinds) == {"read_file", "list_directory", "search_repository"}
+    assert "run_artifact" not in profile.allowed_kinds
+    assert "write_file" not in profile.allowed_kinds
+
+
+def test_portable_profile_allowed_kinds_matches_default_consequence_policy_kinds():
+    profile = portable_profile()
+    assert set(profile.allowed_kinds) == set(ConsequencePolicy.DEFAULT_ALLOWED_KINDS)
+
+
+def test_planning_profile_denies_run_artifact_and_write_file(tmp_path):
+    profile = planning_profile(root=str(tmp_path))
+    for kind in ("run_artifact", "write_file"):
+        intent = Intent(kind=kind, principal_id="alice", intent_id=f"i-{kind}", consequence="low")
+        decision = profile.gate.submit(intent)
+        assert decision.permitted is False
+
+
+def test_planning_profile_reads_a_real_file_end_to_end(tmp_path):
+    (tmp_path / "README.md").write_text("hello from the sandbox")
+    profile = planning_profile(root=str(tmp_path))
+    intent = Intent(
+        kind="read_file", principal_id="alice", intent_id="i-read", consequence="low",
+        payload={"path": "README.md"},
+    )
+    result = profile.broker.dispatch(intent)
+    assert result.execution_class == "read_file"
+    assert result.detail["content"] == "hello from the sandbox"
+
+
+def test_planning_profile_confines_reads_to_its_configured_root(tmp_path):
+    profile = planning_profile(root=str(tmp_path))
+    intent = Intent(
+        kind="read_file", principal_id="alice", intent_id="i-escape", consequence="low",
+        payload={"path": "/etc/passwd"},
+    )
+    with pytest.raises(Exception):  # PathEscapesRootError, a GateViolation-unrelated ExecutionError
+        profile.broker.dispatch(intent)
+
+
+def test_compose_kind_profile_defaults_to_identity_mapping():
+    counting = _CountingBackend("widget")
+    profile = compose_kind_profile("widgets", backends={"widget": counting})
+    assert dict(profile.policy_mapping) == {"widget": "widget"}
+    intent = Intent(kind="widget", principal_id="alice", intent_id="i-w", consequence="low", artifact_code="pass")
+    result = profile.broker.dispatch(intent)
+    assert result.execution_class == "widget"
+
+
+def test_compose_kind_profile_denies_kinds_outside_its_mapping():
+    counting = _CountingBackend("widget")
+    profile = compose_kind_profile("widgets", backends={"widget": counting})
+    intent = Intent(kind="gadget", principal_id="alice", intent_id="i-g", consequence="low", artifact_code="pass")
+    decision = profile.gate.submit(intent)
+    assert decision.permitted is False
+    assert counting.call_count == 0

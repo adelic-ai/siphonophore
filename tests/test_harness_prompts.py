@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from siphonophore_core.execution import ExecutionBackend
 from siphonophore_core.intent import Effect
-from siphonophore_harness.composition import compose_profile, portable_profile
+from siphonophore_harness.composition import compose_profile, planning_profile, portable_profile
 from siphonophore_harness.intent_parsing import OPERATION_ALLOWED_FIELDS
 from siphonophore_harness.prompts import DEFAULT_SYSTEM_PROMPT, build_system_prompt
 
@@ -92,3 +92,39 @@ def test_build_system_prompt_for_a_profile_with_no_unavailable_mapping_omits_the
     prompt = build_system_prompt(custom_profile)
     assert "not deliverable" not in prompt
     assert "NO backend registered" not in prompt
+
+
+# ---- planning profile: typed-operation, no-code capability truth ---------------------------------
+
+def test_planning_profile_prompt_names_only_its_own_typed_kinds():
+    prompt = build_system_prompt(planning_profile(root="."))
+    for kind in ("read_file", "list_directory", "search_repository"):
+        assert kind in prompt
+    assert "run_artifact" not in prompt
+    assert "write_file" not in prompt
+
+
+def test_planning_profile_prompt_forbids_artifact_code_entirely():
+    prompt = build_system_prompt(planning_profile(root="."))
+    assert "MUST NOT be present for any kind in this session" in prompt
+
+
+def test_planning_profile_prompt_example_never_uses_artifact_code():
+    prompt = build_system_prompt(planning_profile(root="."))
+    example_line = next(line for line in prompt.splitlines() if '"operation": {"kind": "read_file"' in line)
+    assert "artifact_code" not in example_line
+
+
+# ---- work_order mechanism is always described, regardless of profile -----------------------------
+
+def test_prompt_describes_the_work_order_mechanism():
+    for prompt in (DEFAULT_SYSTEM_PROMPT, build_system_prompt(planning_profile(root="."))):
+        assert '"work_order"' in prompt
+        assert '"status"' in prompt
+        assert '"objective"' in prompt
+        assert '"prompt"' in prompt
+        assert "grants any authority" in prompt or "NEVER itself performs any work" in prompt
+
+
+def test_prompt_warns_operation_and_work_order_are_mutually_exclusive():
+    assert "never both be present" in DEFAULT_SYSTEM_PROMPT.lower() or "Never present alongside" in DEFAULT_SYSTEM_PROMPT
