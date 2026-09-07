@@ -158,7 +158,17 @@ class SameProcessBackend(ExecutionBackend):
     already is). This limitation is not new to this stage -- `exec()` sharing the process's real,
     global streams was already true before capture existed; capturing does not introduce the
     limitation, it just makes it worth stating explicitly now that streams are being read as well
-    as written."""
+    as written.
+
+    **Artifact exceptions (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md coherence fix).** An artifact
+    that raises is caught and re-raised as `ExecutionError` (`raise ... from exc`, preserving the
+    original as `__cause__`), matching `SeparateProcessBackend`'s own `subprocess.CalledProcessError`
+    handling -- both backends implementing `ExecutionBackend` now raise the same exception family
+    on an artifact's own failure, not one wrapped and the other raw. Whatever was captured into the
+    stdout/stderr buffers before the exception is attached to the raised `ExecutionError` as a
+    plain `.detail` attribute (the same "attach curated data to the exception" pattern `broker.py`
+    already uses for `DecisionProjection`) -- so a caller can still see what the artifact printed
+    before it crashed, rather than that evidence being silently discarded."""
 
     def __init__(self, allow_root: bool = False) -> None:
         self._allow_root = allow_root
@@ -171,19 +181,33 @@ class SameProcessBackend(ExecutionBackend):
         namespace: dict = {"payload": intent.payload}
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
-        # No try/except around exec() here, deliberately: an artifact that raises still propagates
-        # exactly as it did before this stage (unwrapped -- same_process never wrapped artifact
-        # exceptions in ExecutionError, unlike separate_process's subprocess.CalledProcessError
-        # handling below; changing that is out of this stage's scope, see the class docstring's
-        # exception-semantics note). Whatever partial output was written into the buffers before an
-        # exception is simply discarded along with the buffers themselves when this method exits
-        # via that exception -- no Effect is constructed on the failure path, so there is nothing
-        # to attach it to; this mirrors the pre-capture behavior of never returning a partial
-        # Effect on failure, at the cost of that partial output no longer being visible anywhere
-        # (previously it would have reached the real terminal before the crash). Not addressed by
-        # this stage -- see docs/REFERENCE_HARNESS_V1_HORIZON.md's own scope boundary.
-        with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
-            exec(intent.artifact_code, namespace)  # noqa: S102 -- the whole point: run exactly the authorized code
+        try:
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                exec(intent.artifact_code, namespace)  # noqa: S102 -- the whole point: run exactly the authorized code
+        except Exception as exc:
+            # Wrapped into ExecutionError -- matching SeparateProcessBackend's own
+            # subprocess.CalledProcessError handling below, a deliberate coherence fix: two
+            # backends implementing the same ExecutionBackend interface should raise the same
+            # exception family on an artifact's own failure, not one wrapped and the other raw
+            # (the raw-passthrough behavior was previously disclosed and deliberate, scoped out of
+            # the output-capture stage; V1's continuation architecture needs EXECUTION_FAILED to be
+            # reachable identically from either backend, which requires this). Whatever was
+            # captured before the exception is attached as `.detail`, exactly as a successful run's
+            # Effect.detail would carry it -- this also resolves that stage's own disclosed
+            # limitation ("partial output... discarded... no Effect is constructed on the failure
+            # path, so there is nothing to attach it to"): there IS somewhere to attach it now,
+            # this exception, following the same "attach curated data to the exception" pattern
+            # broker.py already uses for DecisionProjection.
+            partial_detail: dict = {}
+            stdout = stdout_buffer.getvalue()
+            stderr = stderr_buffer.getvalue()
+            if stdout:
+                partial_detail["stdout"] = _truncate_captured_output(stdout)
+            if stderr:
+                partial_detail["stderr"] = _truncate_captured_output(stderr)
+            error = ExecutionError(f"same_process artifact raised {type(exc).__name__}: {exc}")
+            error.detail = partial_detail
+            raise error from exc
         detail: dict = {}
         stdout = stdout_buffer.getvalue()
         stderr = stderr_buffer.getvalue()
@@ -217,7 +241,12 @@ class SeparateProcessBackend(ExecutionBackend):
                 capture_output=True, text=True, check=True,
             )
         except subprocess.CalledProcessError as exc:
-            raise ExecutionError(f"separate_process artifact exited {exc.returncode}: {exc.stderr}") from exc
+            # .detail attached for the same reason SameProcessBackend's own exception handling
+            # does (this class's docstring; broker.py's DecisionProjection precedent) -- a caller
+            # can still see what the artifact printed before it exited nonzero.
+            error = ExecutionError(f"separate_process artifact exited {exc.returncode}: {exc.stderr}")
+            error.detail = {"stdout": exc.stdout, "stderr": exc.stderr}
+            raise error from exc
         return Effect(
             intent_id=intent.intent_id, execution_class="separate_process",
             detail={"acting_pid": None, "stdout": proc.stdout},

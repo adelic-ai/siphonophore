@@ -64,6 +64,15 @@ def test_separate_process_runs_authorized_artifact_and_reports_its_own_pid(execu
     assert reported["pid"] != os.getpid()  # a REAL, different process, not the test's own
 
 
+def test_separate_process_artifact_failure_attaches_captured_output_to_the_exception(executor: Executor):
+    code = "print('before the crash'); raise SystemExit(1)"
+    intent = Intent(kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="high", artifact_code=code)
+    decision = executor._gate.submit(intent)
+    with pytest.raises(ExecutionError) as exc_info:
+        executor.execute(decision, intent)
+    assert exc_info.value.detail["stdout"] == "before the crash\n"
+
+
 def test_swapped_artifact_is_refused_before_running(executor: Executor):
     """The genuinely-minted Decision authorizes program A; the Intent handed to execute() carries
     program B instead. Gate.verify() alone would return True (the Decision itself is untouched) --
@@ -265,17 +274,21 @@ def test_same_process_large_output_is_truncated_not_dropped_or_unbounded(executo
     assert stdout.startswith("A" * 100)  # the retained head is real captured content, not just the marker
 
 
-def test_same_process_artifact_exception_still_propagates_and_produces_no_effect(executor: Executor):
-    """Capturing output must not swallow an artifact's own failure into a successful Effect --
-    the currently-intended failure semantics (the raw exception propagates, unwrapped, exactly as
-    before this stage) are unchanged."""
+def test_same_process_artifact_exception_still_produces_no_effect_but_is_now_wrapped(executor: Executor):
+    """Capturing output must not swallow an artifact's own failure into a successful Effect. As of
+    docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's coherence fix, the raw exception is wrapped into
+    ExecutionError (matching SeparateProcessBackend's own CalledProcessError handling), with the
+    original exception preserved as __cause__ and whatever was captured before the crash attached
+    as .detail."""
     intent = Intent(
         kind="run_artifact", principal_id="alice", intent_id="i-1", consequence="low",
         artifact_code="print('before the crash'); raise ValueError('boom')",
     )
     decision = executor._gate.submit(intent)
-    with pytest.raises(ValueError, match="boom"):
+    with pytest.raises(ExecutionError, match="ValueError: boom") as exc_info:
         executor.execute(decision, intent)
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert exc_info.value.detail["stdout"] == "before the crash\n"
 
 
 def test_same_process_unicode_output_is_captured_correctly(executor: Executor):

@@ -305,7 +305,10 @@ def _build_operation_outcome(intent_id: str, outcome_source, category: OutcomeCa
         execution_class=decision.execution_class if decision is not None else None,
         authority_id=decision.authority_id if decision is not None else None,
         order_id=decision.order_id if decision is not None else None,
-        detail={},
+        # A failed dispatch may still carry real, backend-captured evidence -- e.g. ExecutionError
+        # attaches whatever an artifact printed before it crashed (execution.py). Present only
+        # when the exception actually carries one; {} otherwise, unchanged from before.
+        detail=getattr(outcome_source, "detail", None) or {},
         reason=str(outcome_source),
     )
 
