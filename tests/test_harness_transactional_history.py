@@ -54,6 +54,22 @@ def _make_loop(completions, sink=None, **kwargs) -> CognitiveLoop:
     return CognitiveLoop(model=ScriptedModel(completions), broker=broker, principal_id="alice", event_sink=sink, **kwargs)
 
 
+def _make_loop_with_broker(completions, broker, sink=None, **kwargs) -> CognitiveLoop:
+    return CognitiveLoop(model=ScriptedModel(completions), broker=broker, principal_id="alice", event_sink=sink, **kwargs)
+
+
+class _CountingBroker:
+    """Proves a code path never calls dispatch() at all, matching the convention already used by
+    tests/test_harness_loop.py."""
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def dispatch(self, intent, authority=None):
+        self.call_count += 1
+        raise AssertionError("Broker.dispatch() must never be called for this turn")
+
+
 def _op(kind="run_artifact", consequence="low", artifact_code="pass", message=None):
     body = {"operation": {"kind": kind, "consequence": consequence, "artifact_code": artifact_code}}
     if message is not None:
@@ -268,3 +284,85 @@ def test_event_sink_receives_nothing_when_none_configured():
     loop = _make_loop([_msg("hi")])
     result = loop.step("hi")
     assert result.message == "hi"
+
+
+# ---- V1: the planning profile structurally forbids code execution, end to end -------------------
+
+def test_planning_profile_end_to_end_denies_run_artifact_no_effect_occurs():
+    """A hostile or confused completion asking for "run_artifact" against the planning profile
+    must be denied (recoverable) -- never dispatched to a code-execution backend, because no such
+    backend is registered and KindExecutionPolicy has no mapping for that kind either."""
+    from siphonophore_harness.composition import planning_profile
+
+    profile = planning_profile(root=".")
+    escape_attempt = json.dumps({
+        "operation": {"kind": "run_artifact", "consequence": "low", "artifact_code": "import os; os.system('echo escaped')"},
+    })
+    loop = CognitiveLoop(
+        model=ScriptedModel([escape_attempt, _msg("that was refused")]),
+        broker=profile.broker, principal_id="alice",
+    )
+    result = loop.step("try to run arbitrary code")
+    assert result.operations[0].category == OutcomeCategory.DENIED
+    assert result.operations[0].detail == {}  # no effect occurred
+    assert result.message == "that was refused"
+
+
+def test_planning_profile_end_to_end_denies_write_file_no_effect_occurs(tmp_path):
+    from siphonophore_harness.composition import planning_profile
+
+    profile = planning_profile(root=str(tmp_path))
+    escape_attempt = json.dumps({
+        "operation": {"kind": "write_file", "consequence": "low", "artifact_code": "open('pwned.txt', 'w').write('x')"},
+    })
+    loop = CognitiveLoop(model=ScriptedModel([escape_attempt, _msg("refused")]), broker=profile.broker, principal_id="alice")
+    result = loop.step("try to write a file")
+    assert result.operations[0].category == OutcomeCategory.DENIED
+    assert not (tmp_path / "pwned.txt").exists()
+
+
+# ---- V1: compiling a WorkOrder never dispatches anything ------------------------------------------
+
+def test_work_order_finalization_never_calls_broker_dispatch():
+    broker = _CountingBroker()
+    work_order_completion = json.dumps({
+        "message": "Here is the compiled plan.",
+        "work_order": {
+            "status": "final", "objective": "add a feature", "prompt": "implement X exactly as discussed",
+        },
+    })
+    loop = _make_loop_with_broker([work_order_completion], broker)
+
+    result = loop.step("compile the work order")
+
+    assert broker.call_count == 0
+    assert result.work_order is not None
+    assert result.work_order.is_final is True
+    assert result.operations == ()
+
+
+def test_work_order_draft_also_never_dispatches_and_is_distinguishable_from_final():
+    broker = _CountingBroker()
+    draft_completion = json.dumps({
+        "work_order": {"status": "draft", "objective": "add a feature", "prompt": "still refining this"},
+    })
+    loop = _make_loop_with_broker([draft_completion], broker)
+
+    result = loop.step("here's a first draft")
+
+    assert broker.call_count == 0
+    assert result.work_order.is_final is False
+
+
+def test_work_order_finalization_commits_history_and_is_logged():
+    capture = _EventCapture()
+    work_order_completion = json.dumps({
+        "work_order": {"status": "final", "objective": "add a feature", "prompt": "implement X"},
+    })
+    loop = _make_loop([work_order_completion], sink=capture.sink)
+    loop.step("compile it")
+
+    assert [e["role"] for e in loop.history] == ["user", "assistant", "effect"]
+    assert "work_order.finalized" in capture.types()
+    finalized_event = next(e for e in capture.events if e["event"] == "work_order.finalized")
+    assert finalized_event["work_order"]["objective"] == "add a feature"
