@@ -136,9 +136,10 @@ def test_hostile_completion_naming_unknown_fields_is_refused_before_any_dispatch
     loop = _make_loop([hostile])
     with pytest.raises(IntentParseError):
         loop.step("do something")
-    # the user turn is recorded, but no assistant/effect turn was appended -- the loop did not
-    # pretend the dispatch happened
-    assert [entry["role"] for entry in loop.history] == ["user"]
+    # transactional history (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md): nothing committed at all
+    # for a turn that fails before any real mediation attempt -- not even the user's own message,
+    # so it cannot dangle and contaminate the next, unrelated turn.
+    assert loop.history == []
 
 
 def test_operation_missing_artifact_code_fails_before_broker_dispatch_and_is_not_message_only():
@@ -172,11 +173,17 @@ def test_input_rejected_on_a_continuation_cycle_still_fails_closed():
 # ---- denial is recoverable: no effect occurs, but the model may explain itself ------------------
 
 def test_denied_operation_is_not_silently_run_and_lets_the_model_explain():
+    # "write_file" is code-bearing (artifact_code is required/allowed for it) but this Gate's own
+    # policy only allows "run_artifact" -- triggering an ordinary policy DENY, not a parser-level
+    # rejection.
+    gate = Gate(ConsequencePolicy(allowed_kinds=("run_artifact",)))
+    backends = {"same_process": SameProcessBackend(allow_root=True)}
+    broker = Broker(gate=gate, executor=Executor(gate, backends=backends))
     denied_then_explain = [
-        _op(kind="definitely_not_allowed", message="I'll try this forbidden thing"),
+        _op(kind="write_file", message="I'll try this forbidden thing"),
         _msg("That action was not permitted, so I did not run it."),
     ]
-    loop = _make_loop(denied_then_explain)
+    loop = _make_loop_with_broker(denied_then_explain, broker)
 
     result = loop.step("do something forbidden")
 

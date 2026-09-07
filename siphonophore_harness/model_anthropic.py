@@ -51,21 +51,33 @@ from .model import Model
 
 @dataclass(frozen=True)
 class ModelResponseDiagnostics:
-    """Structural facts about one Anthropic response's content blocks, captured before
-    `complete()` filters them down to the retained text it returns. Exists so that a downstream
-    parse failure -- which happens after `complete()` has already returned -- doesn't erase the
-    only evidence of what the response actually contained: block_types is recorded from
-    `response.content` before any filtering, not reconstructed afterward from the (possibly
-    empty) retained text.
+    """Structural facts about one Anthropic response, captured before `complete()` filters its
+    content blocks down to the retained text it returns. Exists so that a downstream parse
+    failure -- which happens after `complete()` has already returned -- doesn't erase the only
+    evidence of what the response actually contained: block_types is recorded from
+    `response.content` before any filtering, not reconstructed afterward from the (possibly empty)
+    retained text.
 
-    Deliberately excludes anything else about the SDK response object: no id, no usage/billing
-    metadata, no headers, no repr of `response` itself, and nothing from the request (no API key,
-    no messages). Only counts and block-type names derived from `response.content`."""
+    `stop_reason` and the two token counts (`input_tokens`/`output_tokens`) exist specifically to
+    let a real empty-text-block occurrence (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's defect 1 --
+    a real trial produced block_types=['thinking','text'] with retained_text_length=0) be
+    diagnosed empirically: a `stop_reason` of `"max_tokens"` alongside a small `max_tokens` budget
+    would directly confirm the leading hypothesis (the response was truncated before any real text
+    was emitted) rather than leaving it as an open question forever. Token counts are small,
+    non-sensitive integers -- not billing/cost data, not a repr of `response.usage` itself.
+
+    Deliberately excludes everything else about the SDK response object: no id, no headers, no repr
+    of `response` itself, and nothing from the request (no API key, no messages). Fields absent
+    from a given SDK response (e.g. a fake/test double that doesn't set `usage`) are recorded as
+    `None`, never fabricated."""
 
     block_types: tuple[str, ...]
     text_block_count: int
     total_block_count: int
     retained_text_length: int
+    stop_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class AnthropicAPIModel(Model):
@@ -101,10 +113,14 @@ class AnthropicAPIModel(Model):
         )
         block_types = tuple(block.type for block in response.content)
         text = "".join(block.text for block in response.content if block.type == "text")
+        usage = getattr(response, "usage", None)
         self.last_diagnostics = ModelResponseDiagnostics(
             block_types=block_types,
             text_block_count=sum(1 for block_type in block_types if block_type == "text"),
             total_block_count=len(block_types),
             retained_text_length=len(text),
+            stop_reason=getattr(response, "stop_reason", None),
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
         )
         return text

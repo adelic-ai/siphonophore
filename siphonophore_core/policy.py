@@ -85,3 +85,34 @@ class ConsequencePolicy(Policy):
         permitted = intent.kind in self._allowed_kinds
         execution_class = self._mapping.get(intent.consequence, "same_process")
         return permitted, execution_class
+
+
+class KindExecutionPolicy(Policy):
+    """Routes `execution_class` directly by `intent.kind`, ignoring `intent.consequence` entirely
+    -- the policy shape a typed-capability caller needs, as distinct from `ConsequencePolicy`'s
+    tier-based shape.
+
+    Motivation, independent of any one harness: `ConsequencePolicy` makes sense when many different
+    kinds share a small number of trust *tiers* the caller declares per intent (`"low"`/`"high"`/
+    `"privileged"`). It stops making sense once a caller has several *typed* operations where the
+    execution class is really a property of WHAT the operation is, not a declared trust tier --
+    e.g. a `"read_file"` intent should always run via a `read_file`-shaped backend, never via
+    whatever `same_process`/`separate_process`/`uid_cgroup` a caller-declared `consequence` field
+    happened to map to. This is a real, reusable, model-independent policy shape -- nothing about
+    it is specific to any one reference harness or workflow -- so it lives here alongside
+    `ConsequencePolicy`, as an alternative implementation of the same `Policy` ABC, exactly the
+    extension point `Policy` (DESIGN.md section 2) already exists to support.
+
+    `permitted = intent.kind in mapping`; `execution_class = mapping[intent.kind]` when permitted,
+    otherwise `""` (never consulted by `Gate.submit()`/`Executor.execute()` when `permitted` is
+    `False` -- matching `ConsequencePolicy`'s own precedent of returning *some* `execution_class`
+    even when denying, since `Decision.execution_class` is a required field regardless of
+    `permitted`)."""
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._mapping = dict(mapping)
+
+    def evaluate(self, intent: Intent) -> tuple[bool, str]:
+        if intent.kind not in self._mapping:
+            return False, ""
+        return True, self._mapping[intent.kind]

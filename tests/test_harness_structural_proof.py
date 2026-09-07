@@ -53,9 +53,19 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     `max_operations_per_turn` (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) is likewise allowed:
     a plain integer this class compares against a running count before ever calling
     broker.dispatch() -- not a capability, not something the model's completion can name or
-    influence, and not a second path to an effect either."""
+    influence, and not a second path to an effect either.
+
+    `event_sink` (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md) is allowed for the same reason: a
+    plain callable this class invokes with already-built, harness-authored dict payloads -- never
+    a path, a file handle, or any object with a capability of its own. Emitting an event is
+    control-plane/audit behavior, not a model-requested effect; CognitiveLoop never constructs an
+    Intent for its own logging, and `event_sink` gives it no way to reach the filesystem/network
+    directly (the actual persistence, if any, lives in session_log.py, a file this test does not
+    cover, deliberately -- see loop.py's own module docstring)."""
     import inspect
 
     sig = inspect.signature(loop.CognitiveLoop.__init__)
     param_names = set(sig.parameters) - {"self"}
-    assert param_names == {"model", "broker", "principal_id", "authority", "max_operations_per_turn"}
+    assert param_names == {
+        "model", "broker", "principal_id", "authority", "max_operations_per_turn", "event_sink",
+    }

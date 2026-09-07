@@ -32,6 +32,7 @@ from siphonophore_core.mediation import GateViolation
 from siphonophore_core.policy import Decision
 
 from .intent_parsing import IntentParseError
+from .work_order import WorkOrder
 
 
 @dataclass(frozen=True)
@@ -148,11 +149,18 @@ class TurnResult:
     `max_operations_per_turn`) ended the turn before the model produced a final message -- the
     operation that would have exceeded the bound was never dispatched, never mediated; whatever the
     model said alongside that refused request (if anything) is `message`, shown honestly rather
-    than fabricated or silently dropped."""
+    than fabricated or silently dropped.
+
+    `work_order` is non-None exactly when this turn's completion named a `work_order` field
+    (`intent_parsing.py`, `work_order.py`) -- mutually exclusive with `operations` being non-empty
+    (a completion may not name both `operation` and `work_order` in the same turn). Compiling a
+    WorkOrder is never routed through `Broker.dispatch()`; it grants no authority and launches no
+    workers -- see `work_order.py`'s own docstring."""
 
     message: str | None
     operations: tuple["OperationOutcome", ...]
     exhausted: bool
+    work_order: WorkOrder | None = None
 
 
 class OutcomeCategory(str, Enum):

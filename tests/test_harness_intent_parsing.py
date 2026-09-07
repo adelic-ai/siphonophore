@@ -176,3 +176,102 @@ def test_parse_intent_cannot_name_its_own_intent_id():
     operation = {"kind": "write_file", "artifact_code": "pass", "intent_id": "attacker-chosen-id"}
     with pytest.raises(IntentParseError):
         parse_intent(operation, principal_id="alice")
+
+
+# ---- typed (non-code-bearing) operations: artifact_code required for none but run_artifact/write_file
+
+def test_parse_intent_typed_operation_needs_no_artifact_code():
+    intent = parse_intent({"kind": "read_file", "payload": {"path": "README.md"}}, principal_id="alice")
+    assert intent.kind == "read_file"
+    assert intent.artifact_code is None
+
+
+def test_parse_intent_typed_operation_rejects_artifact_code():
+    """A typed operation's behavior is fixed by its backend, never by caller-supplied code --
+    attaching artifact_code to one is refused outright rather than silently ignored, which would
+    otherwise look like the model's code ran when nothing read it."""
+    with pytest.raises(IntentParseError):
+        parse_intent({"kind": "read_file", "payload": {"path": "x"}, "artifact_code": "pass"}, principal_id="alice")
+
+
+def test_parse_intent_list_directory_needs_no_payload_at_all():
+    intent = parse_intent({"kind": "list_directory"}, principal_id="alice")
+    assert intent.kind == "list_directory"
+    assert intent.payload == {}
+    assert intent.artifact_code is None
+
+
+# ---- work_order envelope field --------------------------------------------------------------------
+
+def _work_order_body(status="final", **overrides):
+    body = {"status": status, "objective": "add a feature", "prompt": "implement X exactly as discussed"}
+    body.update(overrides)
+    return body
+
+
+def test_work_order_only_envelope_yields_no_intent():
+    completion = json.dumps({"message": "here's the plan", "work_order": _work_order_body()})
+    parsed = parse_turn(completion, principal_id="alice")
+    assert parsed.intent is None
+    assert parsed.work_order is not None
+    assert parsed.work_order.status == "final"
+    assert parsed.work_order.objective == "add a feature"
+
+
+def test_work_order_gets_a_fresh_harness_minted_id_never_from_the_completion():
+    completion = json.dumps({"work_order": _work_order_body()})
+    parsed = parse_turn(completion, principal_id="alice")
+    assert parsed.work_order.work_order_id  # non-empty
+    # even if the completion tried to name one, "work_order_id" is not an allowed field:
+    hostile = json.dumps({"work_order": {**_work_order_body(), "work_order_id": "attacker-chosen"}})
+    with pytest.raises(IntentParseError):
+        parse_turn(hostile, principal_id="alice")
+
+
+def test_work_order_and_operation_together_is_rejected():
+    completion = json.dumps({
+        "operation": {"kind": "read_file", "payload": {"path": "x"}},
+        "work_order": _work_order_body(),
+    })
+    with pytest.raises(IntentParseError):
+        parse_turn(completion, principal_id="alice")
+
+
+def test_work_order_missing_required_field_raises():
+    completion = json.dumps({"work_order": {"status": "final", "objective": "x"}})  # no prompt
+    with pytest.raises(IntentParseError):
+        parse_turn(completion, principal_id="alice")
+
+
+def test_work_order_invalid_status_raises():
+    completion = json.dumps({"work_order": _work_order_body(status="in_progress")})
+    with pytest.raises(IntentParseError):
+        parse_turn(completion, principal_id="alice")
+
+
+def test_work_order_draft_status_is_not_final():
+    completion = json.dumps({"work_order": _work_order_body(status="draft")})
+    parsed = parse_turn(completion, principal_id="alice")
+    assert parsed.work_order.is_final is False
+
+
+def test_work_order_optional_list_fields_default_to_empty():
+    completion = json.dumps({"work_order": _work_order_body()})
+    parsed = parse_turn(completion, principal_id="alice")
+    assert parsed.work_order.requirements == ()
+    assert parsed.work_order.capability_requirements == ()
+
+
+def test_work_order_full_fields_round_trip():
+    body = _work_order_body(
+        requirements=["req1"], constraints=["con1"], acceptance_criteria=["ac1"],
+        capability_requirements=["filesystem_write"], network_requirements=["pypi.org"],
+        resource_expectations="a few minutes",
+    )
+    completion = json.dumps({"work_order": body})
+    parsed = parse_turn(completion, principal_id="alice")
+    wo = parsed.work_order
+    assert wo.requirements == ("req1",)
+    assert wo.capability_requirements == ("filesystem_write",)
+    assert wo.network_requirements == ("pypi.org",)
+    assert wo.resource_expectations == "a few minutes"
