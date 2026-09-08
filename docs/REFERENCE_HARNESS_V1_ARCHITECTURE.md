@@ -550,3 +550,175 @@ across the whole turn (no duplicate dispatch from retry handling, in either run)
 **Explicitly out of scope for this addendum, Part 2** (deferred, not rejected, unchanged from Part
 1's list): long-session context compaction, a semantic outline/`ResponsePlan` mechanism,
 `fetch_url`, Constructor/worker orchestration, expanding the planning profile toward a build agent.
+
+## Post-Review Hardening Addendum (bounded tranche over `311f498..76c3dc3`)
+
+A fresh review of the V1.1 work reported ten findings (3 HIGH, 5 MEDIUM, 2 LOWER). Each was treated
+as a hypothesis, not established truth: inspected, reproduced with a focused regression test where
+feasible, characterized, then minimally fixed. Nine reproduced as real defects (fixed); one (#6,
+below) did not reproduce as a behavior defect — the runtime was already correct, only its own
+docstring's prose was imprecise, and that prose is fixed instead. Branch:
+`hardening/reference-harness-v1.1-postreview`.
+
+**HIGH**
+
+1. **`CognitiveLoop.last_operations` missed the operation attempted on the fail-closed
+   `INTEGRITY_REJECTED` path.** `step()` builds and appends the `OperationOutcome` (and updates
+   `self.last_operations`) only on the success/recoverable branch, never on the
+   `not dispatched_ok and category in _FAIL_CLOSED_CATEGORIES` raise path — even though `commit()`
+   had already made that same attempt permanent in `self.history` moments earlier. Reproduced with a
+   broker stand-in that dispatches once for real, then raises a forged-decision
+   `DecisionVerificationError` on the next call: `last_operations` held only the first operation,
+   not the second (the one that actually raised), directly contradicting this module's own "updated
+   after every real dispatch attempt, successful or not" claim. Fixed by building and appending the
+   `OperationOutcome` immediately before the `raise`, exactly as every other branch already does.
+   Regression: `test_last_operations_includes_the_operation_attempted_on_the_fail_closed_integrity_path`
+   (`test_harness_transactional_history.py`).
+
+2. **`SearchRepositoryBackend`'s directory walk fully materialized and sorted before applying its
+   file-count bound, and had no cycle protection.** Both reproduced. `sorted(_iter_confined_files(...))`
+   pulled the ENTIRE confined, walkable tree into memory and sorted it before `_MAX_FILES_WALKED`
+   ever applied — measured ~1.9s to walk 60,000 files against a 5,000-file bound, cost scaling with
+   total tree size, not the bound. Directory symlinks ARE followed (`is_dir()` is true for a
+   symlink-to-directory, and the symlink path itself, not its resolved target, is re-queued for
+   descent) — a self-referential symlink happened not to hang only because the OS's own per-lookup
+   ELOOP limit incidentally terminated the ever-lengthening resolved path after a few dozen
+   iterations; a genuine two-node cyclic topology (A/link_to_b -> B, B/link_to_a -> A) does NOT
+   merely hang slower, it silently returns duplicated/amplified results — reproduced directly: the
+   same real file's matches appeared 20 times instead of once, before this fix (confirmed against
+   the pre-fix code; the self-referential single-node case alone did not amplify, since it produced
+   no matches to duplicate). Fixed with two independent changes: `_iter_confined_files` now tracks
+   the resolved real identity of every directory already queued for descent and skips a re-visit
+   (deterministic cycle termination, not dependent on any OS limit); `SearchRepositoryBackend.run()`
+   now bounds how many entries it ever pulls from the (lazy) walk via `itertools.islice`, sorting
+   only that bounded set, rather than materializing the whole tree first (large-tree cost now
+   ~0.3s regardless of total tree size beyond the bound). Path confinement itself is unchanged.
+   Regressions: `test_search_repository_self_referential_directory_symlink_terminates`,
+   `test_search_repository_two_node_cyclic_directory_symlinks_terminates`,
+   `test_search_repository_symlinked_directory_resolving_inside_root_is_searched_once`,
+   `test_search_repository_large_tree_beyond_file_count_bound_is_truncated_without_full_materialization`
+   (`test_execution_readonly.py`).
+
+3. **A non-string payload value (e.g. a JSON array for `path`) raised a raw `TypeError`, escaping
+   `CognitiveLoop`'s dispatch-handling boundary.** Reproduced directly: `ReadFileBackend`,
+   `ListDirectoryBackend`, and `SearchRepositoryBackend` all pass `intent.payload["path"]` straight
+   into `Path(...)`/`_confine()`; a truthy non-string value (list/dict/number) skips the existing
+   `if not path` empty-check and reaches `Path()`, raising `TypeError` — a type `step()`'s
+   `except (GateViolation, ExecutionError, IdentityError)` does not catch, so it propagates out of
+   the loop entirely instead of failing closed. `SearchRepositoryBackend.pattern` had the identical
+   gap. A related gap one layer up: `parse_intent()` never checked that `payload` itself decodes to
+   a JSON object, so a non-dict `payload` (e.g. a JSON array) produced an `Intent` whose `.payload`
+   isn't a dict, and the first backend calling `.get()` on it would raise a raw `AttributeError`.
+   Fixed at both layers: `_confine()` (`execution_readonly.py`) now rejects a non-string path with
+   `ExecutionError`, `SearchRepositoryBackend.run()` now requires `pattern` to be a non-empty string
+   the same way, and `parse_intent()` (`intent_parsing.py`) now requires `payload` to decode to a
+   JSON object, failing closed with a recoverable `IntentParseError` (self-correctable within the
+   existing bounded parse-retry policy) rather than an unhandled exception at the backend boundary.
+   Regressions: `test_read_file_non_string_path_fails_closed_not_a_raw_type_error`,
+   `test_list_directory_non_string_path_fails_closed_not_a_raw_type_error`,
+   `test_search_repository_non_string_pattern_fails_closed_not_a_raw_type_error`,
+   `test_search_repository_non_string_path_fails_closed_not_a_raw_type_error`
+   (`test_execution_readonly.py`); `test_parse_intent_rejects_non_object_payload`
+   (`test_harness_intent_parsing.py`).
+
+**MEDIUM**
+
+4. **Loop detection compared only consecutive requests, so an alternating probing pattern evaded
+   it until the 50-operation safety net.** Reproduced directly: a scripted `A, B, A, B, A, B`
+   sequence (repeated_operation_limit=3) ran the `ScriptedModel` dry (6 completions consumed, no
+   loop ever detected) under the pre-fix consecutive-only comparison. Fixed with a small, BOUNDED
+   sliding window (`2N-1` most recent operation-request signatures, N=`repeated_operation_limit`) —
+   sized so an alternating period-2 pattern trips at the same Nth occurrence a purely consecutive
+   repeat already did — built fresh at the start of every `step()` call (never persists across
+   turns) and evicted (`collections.deque(maxlen=...)`) as it grows, so a legitimate revisit of an
+   earlier observation much later in a long, otherwise-varied turn ages out of the window and is
+   never penalized; this is deliberately NOT a history-wide duplicate ban.
+   Regressions: `test_alternating_operations_trip_the_loop_detector`,
+   `test_a_distant_revisit_in_a_long_varied_turn_does_not_trip_the_detector` (`test_harness_loop.py`).
+
+5. **`artifact_code` forbidden-field checking used truthiness, letting an empty string through.**
+   Reproduced directly: `operation.get("artifact_code")` on the FORBIDDEN (non-code-bearing-kind)
+   side is falsy for `""`, so `{"kind": "read_file", "artifact_code": ""}` silently passed where any
+   non-empty value would have been rejected. Fixed by checking `is not None` on that side instead
+   (the REQUIRED side, for code-bearing kinds, is unchanged and correctly still uses truthiness --
+   an empty string is not a usable artifact there either way).
+   Regression: `test_parse_intent_typed_operation_rejects_empty_string_artifact_code`
+   (`test_harness_intent_parsing.py`).
+
+6. **Architecture question, resolved: operations + a terminal WorkOrder in one turn is intentional,
+   not a contract violation.** `TurnResult`'s own docstring read as claiming `operations` non-empty
+   and `work_order` non-None are mutually exclusive for a whole turn. What `parse_turn()` actually
+   enforces is narrower and per-COMPLETION: a single completion may not name both `"operation"` and
+   `"work_order"`. A multi-cycle turn dispatching several real, mediated read-only operations in
+   earlier cycles and THEN compiling a WorkOrder in a later cycle of that same turn already worked
+   correctly at runtime (unchanged) and is the intended shape for a read-only planning agent that
+   cannot itself execute the work it specifies ("investigate, then specify"). This did not reproduce
+   as a behavior defect; the docstring's prose was the actual inaccuracy, and is corrected
+   (`outcome.py`) to state the per-completion (not per-turn) scope of the exclusivity. Confirming
+   regression (not a bug-fix test): `test_operations_then_a_work_order_in_the_same_turn_is_valid_not_mutually_exclusive`
+   (`test_harness_transactional_history.py`).
+
+7. **Loop-detector identity always included `consequence`, even when it is structurally inert.**
+   `KindExecutionPolicy`-routed profiles (`compose_kind_profile()`, `planning_profile()`) never read
+   `intent.consequence` at all (`ExecutionProfile.consequence_is_load_bearing = False`) — two
+   otherwise byte-identical requests differing only in declared consequence produce the identical
+   effect under such a profile, yet the pre-fix signature still treated them as distinct, letting a
+   model evade detection by cycling a field that changes nothing. Fixed by threading
+   `consequence_is_load_bearing` (new `CognitiveLoop` constructor parameter, defaulting to `True` --
+   unchanged behavior for every existing caller; `examples/repl.py` now passes
+   `profile.consequence_is_load_bearing`) into the signature: `consequence` is folded in only when
+   it is actually load-bearing for the active profile. `test_harness_structural_proof.py`'s
+   constructor-shape assertion is extended to allow this one additional plain, inert `bool` --
+   the same category (never read from or influenced by the model's own completion, not a capability)
+   its own docstring already established for the existing integer/callable parameters.
+   Regressions: `test_consequence_field_is_load_bearing_by_default_pairwise_distinct_requests_never_trip`,
+   `test_consequence_field_excluded_from_loop_signature_when_not_load_bearing` (`test_harness_loop.py`).
+
+8. **Session-log field bounding applied only to top-level strings, not nested structured data.**
+   Reproduced directly: `_redact_and_bound_event` checked `isinstance(value, str)` on each
+   TOP-LEVEL event field only — `operation.result`'s own `detail` (a whole `Effect.detail` dict,
+   e.g. `ReadFileBackend`'s `{"content": "...", ...}`) is a dict, so a large captured string nested
+   inside it (bounded only by the much larger, intentionally-larger backend-capture bound, up to
+   200,000 characters) reached a JSONL log line entirely unbounded by this module's own,
+   intentionally smaller per-field bound (10,000 characters in the reproduction, unbounded either
+   way pre-fix). Fixed with `_bound_value()`, applied recursively through dicts and lists, leaving
+   the existing `work_order` whole-payload exemption unchanged.
+   Regressions: `test_nested_string_fields_inside_a_dict_are_also_bounded`,
+   `test_nested_string_fields_inside_a_list_are_also_bounded` (`test_harness_session_log.py`).
+
+**LOWER (deliberately not addressed in this tranche)**
+
+9. `EventLog.emit()` opens/closes its log file on every call — a pure efficiency concern (no
+   correctness or security impact; every event is still durably, atomically appended). Holding a
+   file handle across the object's lifetime would need its own flush/close discipline and is a
+   design change, not a bounded fix — left for a future tranche.
+
+10. Containment logic is duplicated between `_confine()` and `_iter_confined_files()` — a DRY
+    concern, not a defect (both independently enforce the identical resolve-then-check invariant,
+    and finding #2's fix touches `_iter_confined_files()` directly; consolidating them now, in a
+    security-sensitive path, was judged more likely to introduce risk than to reduce it within this
+    tranche's bounded scope). Left for a future tranche.
+
+**Live-provider acceptance.** Two fresh sessions against the real Anthropic API (`claude-sonnet-5`),
+both driving the established primary scenario ("inspect the repository and explain how the planning
+profile prevents modification, without compiling a work order"): run 1 dispatched 14 real operations
+(1 `list_directory`, 4 `read_file`, 9 `search_repository`) recovering 5 isolated malformed
+completions; run 2 dispatched 17 real operations (1 `list_directory`, 5 `read_file`, 11
+`search_repository`) recovering 12. Both completed in exactly one logical turn, every dispatched
+operation classified `executed`, zero `turn.failed` events, no exhaustion, no loop falsely detected
+despite run 2's many `search_repository` calls exercising the finding-#2 fix directly against this
+repository's own real tree. A third session asked the model to investigate this loop detector's own
+implementation and then compile a final WorkOrder describing a follow-up task: it dispatched 19 real
+operations (17 `search_repository`, 2 `read_file`, all `executed`, loop never falsely detected
+despite 17 consecutive `search_repository` calls in the same turn) and then finalized a WorkOrder in
+that SAME turn/turn_id -- `TurnResult.operations` non-empty and `.work_order` non-None together,
+live confirmation of finding #6's resolved architecture question against the real API, not just the
+deterministic regression test. `INTEGRITY_REJECTED` (finding #1) was not
+exercised live: it requires a forged/tampered `Decision`, structurally unreachable through a real
+`Broker.dispatch()` call (per `classify_outcome()`'s own docstring) — covered instead by the
+deterministic regression test above, matching this codebase's existing convention for this category
+(`test_harness_outcome.py`, `_IntegrityRejectingBroker`).
+
+**Explicitly out of scope for this tranche** (per the tranche brief, unchanged): Constructor, worker
+orchestration, VM lifecycle CLI, workspace/Git transfer, session compaction, resume, `fetch_url`/
+network capabilities, MCP, primary-agent redesign.
