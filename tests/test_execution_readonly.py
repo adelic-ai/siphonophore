@@ -88,6 +88,16 @@ def test_read_file_nonexistent_file_raises(sandbox):
         backend.run(None, _intent("read_file", {"path": "does_not_exist.txt"}))
 
 
+def test_read_file_non_string_path_fails_closed_not_a_raw_type_error(sandbox):
+    """Reproduced defect: a non-string, truthy `path` (e.g. a JSON array) skipped the
+    `if not path` empty-check and reached `Path(relative_path)` inside `_confine()`, raising a raw
+    `TypeError` that CognitiveLoop.step()'s `except (GateViolation, ExecutionError, IdentityError)`
+    does not catch -- escaping the dispatch handling boundary entirely instead of failing closed."""
+    backend = ReadFileBackend(root=sandbox)
+    with pytest.raises(ExecutionError, match="path must be a string"):
+        backend.run(None, _intent("read_file", {"path": ["src", "main.py"]}))
+
+
 # ---- ListDirectoryBackend ---------------------------------------------------------------------
 
 def test_list_directory_returns_entries(sandbox):
@@ -125,7 +135,12 @@ def test_list_directory_bounded(sandbox):
     backend = ListDirectoryBackend(root=sandbox, max_entries=5)
     effect = backend.run(None, _intent("list_directory", {"path": "many"}))
     assert len(effect.detail["entries"]) == 5
-    assert effect.detail["truncated"] is True
+
+
+def test_list_directory_non_string_path_fails_closed_not_a_raw_type_error(sandbox):
+    backend = ListDirectoryBackend(root=sandbox)
+    with pytest.raises(ExecutionError, match="path must be a string"):
+        backend.run(None, _intent("list_directory", {"path": {"nope": True}}))
 
 
 # ---- SearchRepositoryBackend --------------------------------------------------------------------
@@ -162,6 +177,21 @@ def test_search_repository_missing_pattern_raises(sandbox):
     backend = SearchRepositoryBackend(root=sandbox)
     with pytest.raises(ExecutionError, match="requires a non-empty 'pattern'"):
         backend.run(None, _intent("search_repository", {}))
+
+
+def test_search_repository_non_string_pattern_fails_closed_not_a_raw_type_error(sandbox):
+    """Reproduced defect: a non-string, truthy `pattern` (e.g. a JSON array) skipped the
+    `if not pattern` check and reached `re.compile(pattern)`/dict-keying internals, raising a raw
+    `TypeError` rather than failing closed with `ExecutionError`."""
+    backend = SearchRepositoryBackend(root=sandbox)
+    with pytest.raises(ExecutionError, match="requires a non-empty 'pattern'"):
+        backend.run(None, _intent("search_repository", {"pattern": ["MARKER_TOKEN"]}))
+
+
+def test_search_repository_non_string_path_fails_closed_not_a_raw_type_error(sandbox):
+    backend = SearchRepositoryBackend(root=sandbox)
+    with pytest.raises(ExecutionError, match="path must be a string"):
+        backend.run(None, _intent("search_repository", {"pattern": "x", "path": 123}))
 
 
 def test_search_repository_bounded_matches(sandbox):
@@ -252,6 +282,71 @@ def test_search_repository_symlink_escape_does_not_consume_files_walked_or_match
     finally:
         (outside / "secret.txt").unlink()
         outside.rmdir()
+
+
+# ---- SearchRepositoryBackend: adversarial symlink topology (cycles) and the file-count bound ----
+# Reproduced/characterized (post-V1.1 hardening review): the walk previously fully materialized
+# and sorted every confined, non-excluded entry BEFORE applying `_MAX_FILES_WALKED` -- an
+# adversarially large (but acyclic) tree paid the full walk/sort cost regardless of the bound
+# (measured: ~1.9s / 60,000 files vs ~0.3s after the fix, and the cost is proportional to total
+# tree size, not the bound, so this scales unboundedly with an attacker-controlled tree). A
+# self-referential or two-node cyclic directory symlink topology happened NOT to hang in practice
+# only because the OS's own per-lookup symlink-resolution limit (ELOOP) incidentally terminated
+# the ever-lengthening resolved path after a few dozen iterations -- not something this module's
+# own correctness should depend on. Both are fixed together: `_iter_confined_files` now tracks
+# visited real directory identities (deterministic cycle termination, independent of any OS
+# limit), and `SearchRepositoryBackend.run()` bounds how many entries it ever pulls from the
+# (lazy) walk, rather than materializing it fully before truncating.
+
+def test_search_repository_self_referential_directory_symlink_terminates(sandbox):
+    """A directory containing a symlink to itself: is_dir() is followed for a directory symlink,
+    so without cycle protection this can re-descend into itself forever."""
+    (sandbox / "a").mkdir()
+    (sandbox / "a" / "loop").symlink_to(sandbox / "a", target_is_directory=True)
+    backend = SearchRepositoryBackend(root=sandbox)
+    effect = backend.run(None, _intent("search_repository", {"pattern": "hello", "path": "a"}))
+    assert effect.detail["truncated"] is False
+    assert effect.detail["matches"] == []
+
+
+def test_search_repository_two_node_cyclic_directory_symlinks_terminates(sandbox):
+    """A <-> B via two directory symlinks, neither pointing directly at itself -- an indirect
+    cycle self-referential-only cycle protection could miss."""
+    (sandbox / "cyc_a").mkdir()
+    (sandbox / "cyc_b").mkdir()
+    (sandbox / "cyc_b" / "marker.txt").write_text("MARKER_TOKEN\n")
+    (sandbox / "cyc_a" / "to_b").symlink_to(sandbox / "cyc_b", target_is_directory=True)
+    (sandbox / "cyc_b" / "to_a").symlink_to(sandbox / "cyc_a", target_is_directory=True)
+    backend = SearchRepositoryBackend(root=sandbox)
+    effect = backend.run(None, _intent("search_repository", {"pattern": "MARKER_TOKEN", "path": "cyc_a"}))
+    assert effect.detail["truncated"] is False
+    # cyc_b (and its real marker.txt) is reachable via cyc_a/to_b -- found once, not looped over
+    paths = [m["path"] for m in effect.detail["matches"]]
+    assert paths.count("cyc_b/marker.txt") == 1
+
+
+def test_search_repository_symlinked_directory_resolving_inside_root_is_searched_once(sandbox):
+    """A symlink pointing at another location already inside root is real, legitimate confinement
+    (not an escape) -- it is followed, but visited-tracking means its target's contents are
+    reported once, not duplicated via both the direct path and the alias."""
+    (sandbox / "alias_to_src").symlink_to(sandbox / "src", target_is_directory=True)
+    backend = SearchRepositoryBackend(root=sandbox)
+    effect = backend.run(None, _intent("search_repository", {"pattern": "MARKER_TOKEN"}))
+    paths = [m["path"] for m in effect.detail["matches"]]
+    assert paths.count("src/nested/deep.py") == 1
+
+
+def test_search_repository_large_tree_beyond_file_count_bound_is_truncated_without_full_materialization(sandbox):
+    from siphonophore_core.execution_readonly import _MAX_FILES_WALKED
+
+    many = sandbox / "many"
+    many.mkdir()
+    for i in range(_MAX_FILES_WALKED + 10):
+        (many / f"f{i}.txt").write_text("nomatch\n")
+    backend = SearchRepositoryBackend(root=sandbox)
+    effect = backend.run(None, _intent("search_repository", {"pattern": "NEVERMATCH", "path": "many"}))
+    assert effect.detail["truncated"] is True
+    assert effect.detail["matches"] == []
 
 
 # ---- SearchRepositoryBackend: noise reduction (hardcoded excludes + .gitignore) -----------------

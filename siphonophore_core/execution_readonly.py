@@ -20,6 +20,7 @@ executes code of any kind, spawns a process, or opens anything for writing.
 from __future__ import annotations
 
 import fnmatch
+import itertools
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,7 +139,17 @@ def _confine(root: Path, relative_path: str) -> Path:
     inside `root` that points outside it is caught here by the post-resolve containment check, not
     merely by a textual "does the string contain .." scan. Rejects absolute paths outright -- a
     caller-declared absolute path has no business inside a root-confined operation, regardless of
-    where it would resolve to."""
+    where it would resolve to.
+
+    `relative_path` is model-controlled payload data (`intent.payload["path"]`), so it can be any
+    JSON type, not just a string -- a completion naming a list/dict/number for `path` must fail
+    closed with the same `ExecutionError` family every other malformed payload does, never as a
+    raw `TypeError` from `Path()` itself escaping the dispatch handling boundary
+    (`CognitiveLoop.step()` only catches `GateViolation`/`ExecutionError`/`IdentityError`)."""
+    if not isinstance(relative_path, str):
+        raise ExecutionError(
+            f"path must be a string, got {type(relative_path).__name__}"
+        )
     if Path(relative_path).is_absolute():
         raise PathEscapesRootError(
             f"path must be relative to the configured root, got an absolute path: {relative_path!r}"
@@ -231,8 +242,20 @@ def _iter_confined_files(
     harness's own generated session-log directory, which is not source/repository evidence and has
     no reason to be universal enough to belong in this module's own hardcoded set), or
     `ignore_rules` -- applied once, at the point of deciding whether to descend, so an excluded
-    directory's contents are never even examined, let alone counted toward `_MAX_FILES_WALKED`."""
+    directory's contents are never even examined, let alone counted toward `_MAX_FILES_WALKED`.
+
+    **Cycle protection.** A directory symlink IS followed here (`is_dir()` on a symlink-to-directory
+    is True, and the symlink path itself -- not its resolved target -- is pushed back onto `stack`,
+    so a later `.iterdir()` on it follows the link again). `visited_dirs` tracks the RESOLVED real
+    identity of every directory this walk has already queued for descent; an entry that resolves to
+    one already in that set is skipped rather than re-descended, so a self-referential directory
+    symlink (a directory containing a symlink to itself or an ancestor) or an indirect cycle (two or
+    more directories symlinked to each other) both terminate deterministically -- the walk is
+    bounded by the real number of distinct directories reachable, never by the OS's own
+    per-lookup symlink-resolution limit (which would otherwise be the only thing stopping a
+    pathologically deep chain, and is not something this module's own bound should depend on)."""
     resolved_root = root.resolve()
+    visited_dirs: set[Path] = {start}
     stack = [start]
     while stack:
         current = stack.pop()
@@ -259,6 +282,9 @@ def _iter_confined_files(
                     or ignore_rules.is_ignored(rel_posix, entry.name, is_dir=True)
                 ):
                     continue
+                if resolved_entry in visited_dirs:
+                    continue  # already walked via this real path -- a symlink cycle, direct or indirect
+                visited_dirs.add(resolved_entry)
                 stack.append(entry)
             else:
                 if ignore_rules.is_ignored(rel_posix, entry.name, is_dir=False):
@@ -331,7 +357,7 @@ class SearchRepositoryBackend(ExecutionBackend):
 
     def run(self, decision: Decision, intent: Intent) -> Effect:
         pattern = intent.payload.get("pattern")
-        if not pattern:
+        if not isinstance(pattern, str) or not pattern:
             raise ExecutionError("search_repository requires a non-empty 'pattern' in payload")
         subdir = intent.payload.get("path") or "."
         confined = _confine(self._root, subdir)
@@ -350,20 +376,25 @@ class SearchRepositoryBackend(ExecutionBackend):
             truncated_matches = _scan_file_for_matches(confined, rel_posix, regex, matches, self._max_matches)
         elif confined.is_dir():
             ignore_rules = _GitignoreRules.load(self._root)
-            files_walked = 0
-            # Sorted by repo-relative path, matching the lexical order this backend has always
-            # returned -- now over a clean (confined, excluded, ignore-filtered) file list rather
-            # than a raw recursive walk, so truncation below only ever discards genuinely-searched
-            # content, never noise that happened to sort first.
-            walked = sorted(
-                _iter_confined_files(self._root, confined, ignore_rules, self._extra_excluded_dir_names),
-                key=lambda pair: pair[1],
-            )
+            walk = _iter_confined_files(self._root, confined, ignore_rules, self._extra_excluded_dir_names)
+            # Bounded CONSUMPTION of the (lazy, generator-based) walk above -- pulls at most
+            # `_MAX_FILES_WALKED + 1` entries total, so an adversarially huge tree cannot make
+            # this backend walk its entire contents before the file-count bound is ever applied
+            # (the fix for the prior `sorted(_iter_confined_files(...))` shape, which fully
+            # materialized -- and so fully walked -- the whole confined tree before truncating).
+            # Sorted by repo-relative path AFTER bounding, not before, so this still returns the
+            # same lexically-ordered shape callers have always seen; the bounded SET of files
+            # searched when a tree exceeds the bound is now whichever this walk's own (also
+            # deterministic, but not lexical) traversal order reaches first, not strictly
+            # "alphabetically first N overall" the way a full sort-then-truncate guaranteed --
+            # an accepted tradeoff for never walking more of an adversarial tree than the bound
+            # allows.
+            limited = list(itertools.islice(walk, _MAX_FILES_WALKED + 1))
+            truncated_files = len(limited) > _MAX_FILES_WALKED
+            if truncated_files:
+                limited = limited[:_MAX_FILES_WALKED]
+            walked = sorted(limited, key=lambda pair: pair[1])
             for file_path, rel_posix in walked:
-                files_walked += 1
-                if files_walked > _MAX_FILES_WALKED:
-                    truncated_files = True
-                    break
                 if _scan_file_for_matches(file_path, rel_posix, regex, matches, self._max_matches):
                     truncated_matches = True
                     break

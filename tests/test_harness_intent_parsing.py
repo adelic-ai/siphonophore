@@ -201,6 +201,25 @@ def test_parse_intent_list_directory_needs_no_payload_at_all():
     assert intent.artifact_code is None
 
 
+def test_parse_intent_typed_operation_rejects_empty_string_artifact_code():
+    """Reproduced defect: the forbidden-artifact_code check used truthiness
+    (`operation.get("artifact_code")`), so an empty string -- falsy, but still a value the field
+    was named with -- slipped past it silently, unlike every other non-empty value. Must be
+    rejected exactly like a non-empty artifact_code would be."""
+    with pytest.raises(IntentParseError):
+        parse_intent({"kind": "read_file", "payload": {"path": "x"}, "artifact_code": ""}, principal_id="alice")
+
+
+def test_parse_intent_rejects_non_object_payload():
+    """Reproduced defect: `operation.get("payload")` was handed straight to `Intent` with no shape
+    check, so a completion naming a JSON array/string/number for `payload` produced an `Intent`
+    whose `.payload` isn't a dict -- the first `execution_readonly.py` backend to call
+    `intent.payload.get(...)` on it would raise a raw `AttributeError` past the dispatch handling
+    boundary rather than failing closed here, at parse time, with a recoverable IntentParseError."""
+    with pytest.raises(IntentParseError, match="payload"):
+        parse_intent({"kind": "read_file", "payload": ["not", "a", "dict"]}, principal_id="alice")
+
+
 # ---- work_order envelope field --------------------------------------------------------------------
 
 def _work_order_body(status="final", **overrides):

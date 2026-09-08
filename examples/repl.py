@@ -477,7 +477,8 @@ def main() -> int:
         loop_kwargs["repeated_operation_limit"] = args.repeated_operation_limit
     loop = CognitiveLoop(
         model=model, broker=profile.broker, principal_id=args.principal_id, authority=authority,
-        event_sink=event_log.sink, **loop_kwargs,
+        event_sink=event_log.sink, consequence_is_load_bearing=profile.consequence_is_load_bearing,
+        **loop_kwargs,
     )
 
     if should_clear_screen(stream=sys.stdout, term=os.environ.get("TERM"), no_clear=args.no_clear):

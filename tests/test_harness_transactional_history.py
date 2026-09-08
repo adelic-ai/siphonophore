@@ -370,6 +370,35 @@ def test_work_order_finalization_commits_history_and_is_logged():
     assert finalized_event["work_order"]["objective"] == "add a feature"
 
 
+def test_operations_then_a_work_order_in_the_same_turn_is_valid_not_mutually_exclusive():
+    """Architecture clarification (post-V1.1 hardening review): `TurnResult`'s docstring read as
+    claiming `operations` non-empty and `work_order` non-None can never both be true for the same
+    turn. What `parse_turn()` actually enforces is narrower and PER-COMPLETION -- a single
+    completion may not name both `"operation"` and `"work_order"` -- not a per-turn ban on ever
+    compiling a WorkOrder after real operations already happened earlier in the same multi-cycle
+    turn. Investigate-then-specify (several real, mediated read-only observations, then a
+    WorkOrder summarizing what to do about them) is the intended shape for a read-only planning
+    agent that cannot execute the work itself -- this is a positive/confirming test, not a
+    reproduced defect: the runtime behavior below was already correct; only the docstring's
+    prose was imprecise, and is fixed alongside this test."""
+    reads = [
+        _op(artifact_code="A = 1", message="checking file0"),
+        _op(artifact_code="A = 2", message="checking file1"),
+    ]
+    work_order_completion = json.dumps({
+        "message": "Investigation complete -- here is the plan.",
+        "work_order": {"status": "final", "objective": "add a feature", "prompt": "implement X"},
+    })
+    loop = _make_loop(reads + [work_order_completion])
+
+    result = loop.step("investigate, then compile a work order")
+
+    assert len(result.operations) == 2
+    assert all(op.category == OutcomeCategory.EXECUTED for op in result.operations)
+    assert result.work_order is not None
+    assert result.work_order.is_final is True
+
+
 # ---- V1: bounded malformed-output retry ------------------------------------------------------------
 
 def test_malformed_completion_recovers_via_bounded_retry():
@@ -497,6 +526,44 @@ def test_last_operations_is_empty_when_no_operation_ever_happened_this_turn():
     loop = _make_loop([_msg("just a reply")])
     loop.step("say something")
     assert loop.last_operations == ()
+
+
+class _IntegrityRejectingAfterFirstBroker:
+    """A real broker for the first dispatch, then INTEGRITY_REJECTED (forged/tampered decision)
+    on every dispatch after that -- reproduces a turn where a genuine, already-committed mediated
+    operation happened before the fail-closed path fires, matching test_I's own scenario but with
+    a prior real dispatch so last_operations has something to lose."""
+
+    def __init__(self, real_broker: Broker) -> None:
+        self._real_broker = real_broker
+        self._calls = 0
+
+    def dispatch(self, intent, authority=None):
+        self._calls += 1
+        if self._calls == 1:
+            return self._real_broker.dispatch(intent, authority=authority)
+        raise DecisionVerificationError("forged decision, simulated for this test")
+
+
+def test_last_operations_includes_the_operation_attempted_on_the_fail_closed_integrity_path():
+    """Reproduced defect: self.last_operations was only ever updated on the success/recoverable
+    path (after classify_outcome), never on the INTEGRITY_REJECTED fail-closed raise -- so a
+    caller catching the raised DecisionVerificationError could not see, via last_operations, that
+    a mediation attempt for THIS operation had just happened, even though it was already
+    unconditionally committed to self.history moments earlier. A single-operation turn made the
+    gap total: last_operations stayed () even though a real dispatch was attempted."""
+    gate = Gate(ConsequencePolicy())
+    backends = {"same_process": SameProcessBackend(allow_root=True), "separate_process": SeparateProcessBackend(allow_root=True)}
+    real_broker = Broker(gate=gate, executor=Executor(gate, backends=backends))
+    broker = _IntegrityRejectingAfterFirstBroker(real_broker)
+    loop = _make_loop_with_broker([_op(artifact_code="A = 1"), _op(artifact_code="A = 2")], broker)
+
+    with pytest.raises(DecisionVerificationError):
+        loop.step("do two things, the second one is forged")
+
+    assert len(loop.last_operations) == 2
+    assert loop.last_operations[0].category == OutcomeCategory.EXECUTED
+    assert loop.last_operations[1].category == OutcomeCategory.INTEGRITY_REJECTED
 
 
 # ---- V1: long-session coherence ---------------------------------------------------------------

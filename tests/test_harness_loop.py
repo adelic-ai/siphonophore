@@ -378,6 +378,92 @@ def test_default_repeated_operation_limit_is_a_small_positive_integer():
     assert DEFAULT_REPEATED_OPERATION_LIMIT > 0
 
 
+def test_alternating_operations_trip_the_loop_detector():
+    """Reproduced defect: the detector only ever compared a request against the ONE immediately
+    preceding it, so a strictly alternating A, B, A, B, ... probing pattern reset the streak on
+    every single request and never tripped -- a model could evade the detector entirely just by
+    alternating between two operations instead of repeating one. The sliding-window fix must catch
+    this at the same Nth occurrence of the repeated signature a purely consecutive repeat would."""
+    a = lambda i: _op(payload={"path": "a.py"}, message=f"a-{i}")
+    b = lambda i: _op(payload={"path": "b.py"}, message=f"b-{i}")
+    ops = [a(0), b(0), a(1), b(1), a(2), b(2)]  # 'a.py' requested 3 times, never consecutively
+    loop = _make_loop(ops, repeated_operation_limit=3)
+
+    result = loop.step("alternate between two things")
+
+    assert result.loop_detected is True
+    # a(0), b(0), a(1), b(1) dispatched for real; a(2) is the 3rd 'a.py' occurrence -- refused
+    assert len(result.operations) == 4
+
+
+def test_a_distant_revisit_in_a_long_varied_turn_does_not_trip_the_detector():
+    """The negative case the sliding window exists to preserve: a legitimate revisit of an
+    earlier observation, separated by enough distinct operations that it has aged out of the
+    bounded recent window, must never be misclassified as a loop -- only a RECENT, tight
+    repetition is a non-progress anomaly."""
+    revisit = _op(payload={"path": "a.py"}, message="re-checking a.py")
+    ops = (
+        [_op(payload={"path": "a.py"}, message="a-first")]
+        + [_op(payload={"path": f"distinct{i}.py"}, message=f"reading {i}") for i in range(6)]
+        + [revisit, _msg("done")]
+    )
+    loop = _make_loop(ops, repeated_operation_limit=3)
+
+    result = loop.step("read a bunch of files, then double check the first one")
+
+    assert result.loop_detected is False
+    assert len(result.operations) == 8
+
+
+def test_consequence_field_is_load_bearing_by_default_pairwise_distinct_requests_never_trip():
+    """Default construction (consequence_is_load_bearing=True, matching a ConsequencePolicy-based
+    profile like portable_profile()): consequence genuinely selects the execution class, so three
+    requests sharing a payload but each naming a DIFFERENT consequence are three distinct
+    signatures, not a 3x repeat of one."""
+    ops = [
+        _op(consequence="low", payload={"path": "a.py"}, message="low"),
+        _op(consequence="high", payload={"path": "a.py"}, message="high"),
+        _op(consequence="privileged", payload={"path": "a.py"}, message="privileged"),
+        _msg("done"),
+    ]
+    loop = _make_loop(ops, repeated_operation_limit=3)
+
+    result = loop.step("request the same path at every declared consequence tier")
+
+    assert result.loop_detected is False
+    assert len(result.operations) == 3
+
+
+def test_consequence_field_excluded_from_loop_signature_when_not_load_bearing():
+    """Reproduced defect: the loop-detector signature always included `intent.consequence`, even
+    when the active profile's Policy never reads it at all (KindExecutionPolicy-routed profiles
+    like planning_profile(), composition.py's `consequence_is_load_bearing=False`) -- a model
+    could evade detection merely by cycling a field that is parsed but structurally inert for that
+    profile, three requests that are otherwise byte-identical and produce the identical effect
+    regardless of which consequence is named."""
+    ops = [
+        _op(consequence="low", payload={"path": "a.py"}, message="low"),
+        _op(consequence="high", payload={"path": "a.py"}, message="high"),
+        _op(consequence="privileged", payload={"path": "a.py"}, message="privileged"),
+        _msg("done"),
+    ]
+    loop = _make_loop(ops, repeated_operation_limit=3, consequence_is_load_bearing=False)
+
+    result = loop.step("request the same path at every declared consequence tier, under an inert policy")
+
+    assert result.loop_detected is True
+    assert len(result.operations) == 2  # low, high dispatched for real; privileged is the 3rd occurrence
+
+
+def test_default_consequence_is_load_bearing_is_true():
+    """Backward-compatible default: every existing caller that does not pass
+    consequence_is_load_bearing keeps today's behavior (consequence folded into the signature)."""
+    import inspect
+
+    sig = inspect.signature(CognitiveLoop.__init__)
+    assert sig.parameters["consequence_is_load_bearing"].default is True
+
+
 # ---- CognitiveLoop holding a delegated Authority (within scope) ----------------------------------
 
 def test_loop_holding_a_delegated_authority_dispatches_through_it():

@@ -73,6 +73,30 @@ def test_long_free_text_fields_are_bounded(tmp_path):
     assert "truncated for event log" in event["completion"]
 
 
+def test_nested_string_fields_inside_a_dict_are_also_bounded(tmp_path):
+    """Reproduced defect: `_redact_and_bound_event` only bounded a bare top-level string field --
+    `operation.result`'s own `detail` (loop.py) is a nested dict (e.g. ReadFileBackend's
+    {"content": "...", ...}, execution_readonly.py), whose own string values are bounded only by
+    the much larger backend-capture bound (up to 200,000 characters), so a single large captured
+    payload could reach a JSONL event line unbounded by this module's own, intentionally smaller
+    per-field bound."""
+    path = tmp_path / "session.jsonl"
+    log = EventLog(path=path, session_id="s-1")
+    huge = "A" * 10_000
+    event = log.emit("operation.result", intent_id="i-1", detail={"content": huge, "truncated": False})
+    assert len(event["detail"]["content"]) < len(huge)
+    assert "truncated for event log" in event["detail"]["content"]
+    assert event["detail"]["truncated"] is False  # non-string values pass through untouched
+
+
+def test_nested_string_fields_inside_a_list_are_also_bounded(tmp_path):
+    path = tmp_path / "session.jsonl"
+    log = EventLog(path=path, session_id="s-1")
+    huge = "M" * 10_000
+    event = log.emit("operation.result", intent_id="i-1", detail={"matches": [{"path": "f.py", "text": huge}]})
+    assert len(event["detail"]["matches"][0]["text"]) < len(huge)
+
+
 def test_work_order_payload_is_not_truncated_even_if_large(tmp_path):
     """Self-containment is the whole point of a WorkOrder -- it is exempted from the generic
     per-field text bound, unlike an ordinary completion or reason string."""

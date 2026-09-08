@@ -159,18 +159,26 @@ def parse_intent(operation: dict, principal_id: str) -> Intent:
         raise IntentParseError(f"operation names unknown fields: {sorted(unknown)}")
     if "kind" not in operation:
         raise IntentParseError("operation is missing required field: 'kind'")
+    payload = operation.get("payload", {})
+    if not isinstance(payload, dict):
+        raise IntentParseError(f"operation 'payload' must decode to a JSON object, got {type(payload).__name__}")
     kind = operation["kind"]
     is_code_bearing = kind in CODE_BEARING_KINDS
     if is_code_bearing and not operation.get("artifact_code"):
         raise IntentParseError(f"operation kind {kind!r} is missing required field: 'artifact_code'")
-    if not is_code_bearing and operation.get("artifact_code"):
+    # `is not None`, not truthiness: an empty string is a legitimate (if useless) value for the
+    # REQUIRED case above to reject via `not operation.get(...)`, but for the FORBIDDEN case here
+    # it must not be allowed to slip through merely because "" is falsy -- a non-code-bearing kind
+    # (e.g. read_file) explicitly naming artifact_code="" is exactly as forbidden as naming real
+    # code, per this function's own docstring.
+    if not is_code_bearing and operation.get("artifact_code") is not None:
         raise IntentParseError(f"operation kind {kind!r} must not include 'artifact_code' -- it is not code-bearing")
 
     return Intent(
         kind=kind,
         principal_id=principal_id,
         intent_id=str(uuid.uuid4()),
-        payload=operation.get("payload", {}),
+        payload=payload,
         consequence=operation.get("consequence", "low"),
         artifact_code=operation.get("artifact_code"),
     )

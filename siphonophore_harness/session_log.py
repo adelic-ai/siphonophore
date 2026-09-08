@@ -53,24 +53,43 @@ def _bound_text(value: str) -> str:
     return value[:_MAX_EVENT_FIELD_CHARS] + f"...[truncated for event log, {len(value)} characters total]"
 
 
+def _bound_value(value: Any) -> Any:
+    """Applies `_bound_text` to every string reachable inside `value`, recursively through dicts
+    and lists/tuples -- not just a bare top-level string field. `operation.result`'s own `detail`
+    (loop.py) is a whole `Effect.detail` dict, e.g. `ReadFileBackend`'s `{"content": "...",
+    ...}` (execution_readonly.py), already bounded upstream only by that backend's own, much
+    larger BACKEND CAPTURE bound (up to 200,000 characters) -- a top-level-only string check never
+    reached that nested `content` value at all, so a single large captured payload could still
+    make one JSONL log line arbitrarily large. Any non-string, non-container value (int, bool,
+    None, ...) passes through unchanged."""
+    if isinstance(value, str):
+        return _bound_text(value)
+    if isinstance(value, dict):
+        return {k: _bound_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_bound_value(v) for v in value]
+    return value
+
+
 def _redact_and_bound_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Applied to every event before it is serialized: bounds any free-text string field
-    (`_bound_text`) and drops (never silently renames) any key whose name suggests it might carry
-    secret/bearer material -- defense in depth alongside the discipline callers of `emit()` are
-    already expected to follow (never pass a Decision token, an API key, or raw authority material
-    as a field value in the first place). `work_order` payloads (see `finalize`) are exempted from
-    per-field truncation: self-containment is the entire point of a WorkOrder, so this module
-    accepts them whole rather than mutilating the one artifact this arc explicitly wants durable in
-    full -- still passed through the forbidden-key filter, since a WorkOrder's own fields are
-    plain, non-secret prose (`work_order.py`'s own schema has no field remotely credential-shaped)."""
+    """Applied to every event before it is serialized: bounds any free-text string field, at any
+    nesting depth (`_bound_value`), and drops (never silently renames) any key whose name suggests
+    it might carry secret/bearer material -- defense in depth alongside the discipline callers of
+    `emit()` are already expected to follow (never pass a Decision token, an API key, or raw
+    authority material as a field value in the first place). `work_order` payloads (see
+    `finalize`) are exempted from per-field truncation: self-containment is the entire point of a
+    WorkOrder, so this module accepts them whole rather than mutilating the one artifact this arc
+    explicitly wants durable in full -- still passed through the forbidden-key filter, since a
+    WorkOrder's own fields are plain, non-secret prose (`work_order.py`'s own schema has no field
+    remotely credential-shaped)."""
     cleaned: dict[str, Any] = {}
     for key, value in event.items():
         if key.lower() in _FORBIDDEN_EVENT_KEYS:
             continue
-        if isinstance(value, str) and key != "work_order":
-            cleaned[key] = _bound_text(value)
-        else:
+        if key == "work_order":
             cleaned[key] = value
+        else:
+            cleaned[key] = _bound_value(value)
     return cleaned
 
 

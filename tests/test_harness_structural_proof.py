@@ -67,7 +67,14 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     `max_parse_retries_per_turn` (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's bounded malformed-
     output robustness policy) is allowed for the identical reason `max_operations_per_turn` is: a
     plain integer compared against a running count, never read from or influenced by the model's
-    own completion."""
+    own completion.
+
+    `consequence_is_load_bearing` (post-V1.1 hardening: loop-detector signature truthfulness) is
+    allowed for the same reason as the two integers above: a plain bool this class only ever reads
+    to decide whether to fold `intent.consequence` into its own loop-detection signature
+    (`step()`), never read from or influenced by the model's own completion, and not a capability
+    of any kind -- the same category `test_module_has_no_effect_producing_imports` above already
+    established `bool`/`int`/callable configuration values fall into."""
     import inspect
 
     sig = inspect.signature(loop.CognitiveLoop.__init__)
@@ -75,4 +82,5 @@ def test_cognitive_loop_only_holds_a_model_a_broker_and_an_authority():
     assert param_names == {
         "model", "broker", "principal_id", "authority", "max_operations_per_turn_safety_net",
         "repeated_operation_limit", "max_parse_retries_per_turn", "event_sink",
+        "consequence_is_load_bearing",
     }

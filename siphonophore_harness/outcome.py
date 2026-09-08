@@ -162,10 +162,20 @@ class TurnResult:
     threshold is always reached, if at all, well before the much larger safety net).
 
     `work_order` is non-None exactly when this turn's completion named a `work_order` field
-    (`intent_parsing.py`, `work_order.py`) -- mutually exclusive with `operations` being non-empty
-    (a completion may not name both `operation` and `work_order` in the same turn). Compiling a
-    WorkOrder is never routed through `Broker.dispatch()`; it grants no authority and launches no
-    workers -- see `work_order.py`'s own docstring."""
+    (`intent_parsing.py`, `work_order.py`). The mutual exclusivity `parse_turn()` actually enforces
+    is PER-COMPLETION, not per-turn: a single completion may not name both `"operation"` and
+    `"work_order"` (`intent_parsing.py`'s own `TOP_LEVEL_ALLOWED_FIELDS` check), but a multi-cycle
+    turn (docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md) can legitimately dispatch several real
+    operations in earlier cycles -- gathering context via mediated, read-only observation -- and
+    THEN compile a `WorkOrder` in a later cycle of that SAME turn, once whatever it read is enough
+    to specify. This is the intended shape for a read-only planning profile that cannot itself
+    execute the work it specifies (docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md's "inspect the
+    repository, then compile a work order" scenario): `operations` non-empty and `work_order`
+    non-None on the same `TurnResult` is a real, tested case
+    (`test_operations_then_a_work_order_in_the_same_turn_is_valid_not_mutually_exclusive`,
+    test_harness_transactional_history.py), not a violation of this contract. Compiling a WorkOrder
+    is never routed through `Broker.dispatch()`; it grants no authority and launches no workers --
+    see `work_order.py`'s own docstring."""
 
     message: str | None
     operations: tuple["OperationOutcome", ...]

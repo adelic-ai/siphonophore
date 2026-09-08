@@ -101,6 +101,7 @@ and after a failed call -- pure display/diagnostic state, like `last_message`/`l
 `last_diagnostics`, read by nothing that affects dispatch."""
 from __future__ import annotations
 
+import collections
 import uuid
 from datetime import datetime, timezone
 from typing import Callable
@@ -129,13 +130,17 @@ from .outcome import OperationOutcome, OutcomeCategory, TurnResult, classify_out
 # still being "large and rarely-hit" in kind, not "a small number that routine work will reach."
 DEFAULT_MAX_OPERATIONS_PER_TURN_SAFETY_NET = 50
 
-# A narrower, independently-scoped anomaly detector: N consecutive (kind, consequence, payload,
-# artifact_code)-identical operation REQUESTS within one turn (whether or not each one was actually
-# dispatched) is treated as a mechanical retry loop, distinct in kind from "the model has many
-# different, individually reasonable observations to make" (which this constant must never
-# penalize -- reading N different files is not a loop just because it is N operations).
-# Deliberately much smaller than the safety net above: a genuine repeated-identical-request loop is
-# diagnosable far earlier than "this turn is taking an unreasonable number of operations overall."
+# A narrower, independently-scoped anomaly detector: N (kind, consequence, payload,
+# artifact_code)-identical operation REQUESTS recurring within a small, bounded recent window of
+# this turn (whether or not each one was actually dispatched, and whether or not the occurrences
+# are strictly consecutive -- an alternating A, B, A, B, ... probing pattern is exactly as much a
+# non-progress loop as A, A, A, ..., see step()'s own comment on the sliding window this uses) is
+# treated as a mechanical retry loop, distinct in kind from "the model has many different,
+# individually reasonable observations to make" (which this constant must never penalize --
+# reading N different files, or revisiting one much earlier observation much later in a long,
+# otherwise-varied turn, is not a loop). Deliberately much smaller than the safety net above: a
+# genuine repeated-identical-request loop is diagnosable far earlier than "this turn is taking an
+# unreasonable number of operations overall."
 DEFAULT_REPEATED_OPERATION_LIMIT = 3
 
 # Separate from the operation bound above -- a malformed completion never reaches Broker.dispatch()
@@ -176,6 +181,7 @@ class CognitiveLoop:
         repeated_operation_limit: int = DEFAULT_REPEATED_OPERATION_LIMIT,
         max_parse_retries_per_turn: int = DEFAULT_MAX_PARSE_RETRIES_PER_TURN,
         event_sink: EventSink | None = None,
+        consequence_is_load_bearing: bool = True,
     ) -> None:
         self._model = model
         self._broker = broker
@@ -185,6 +191,17 @@ class CognitiveLoop:
         self._repeated_operation_limit = repeated_operation_limit
         self._max_parse_retries_per_turn = max_parse_retries_per_turn
         self._event_sink = event_sink
+        self._consequence_is_load_bearing = consequence_is_load_bearing
+        # Bounded recent-window size for repeated-operation detection (module docstring below):
+        # deliberately not just `repeated_operation_limit` (which would only ever catch strictly
+        # consecutive repeats, the V1.1 gap) -- `2N-1` is the smallest window in which a strictly
+        # alternating period-2 pattern (A, B, A, B, A, ...) can accumulate N occurrences of the
+        # same signature, so an alternating probing pattern trips the detector at the same Nth
+        # occurrence a purely consecutive repeat already did. A fresh, empty window is built at
+        # the start of every step() call (like every other per-turn cycle state) -- it never
+        # persists across turns, so a legitimate pattern spanning two separate user turns is never
+        # mistaken for one continuous loop.
+        self._loop_detection_window_size = max(2 * repeated_operation_limit - 1, 1)
         self.history: list[dict] = []
         self.last_message: str | None = None
         self.last_completion: str | None = None
@@ -232,8 +249,9 @@ class CognitiveLoop:
         operations: list[OperationOutcome] = []
         cycle_index = 0
         consecutive_parse_failures = 0
-        last_operation_signature: tuple | None = None
-        consecutive_repeat_count = 0
+        recent_operation_signatures: collections.deque = collections.deque(
+            maxlen=self._loop_detection_window_size
+        )
         while True:
             cycle_id = str(uuid.uuid4())
             if cycle_index > 0:
@@ -354,28 +372,44 @@ class CognitiveLoop:
             intent = parsed.intent
 
             # Repeated-identical-operation detection (DEFAULT_REPEATED_OPERATION_LIMIT, module
-            # docstring above): a narrower, independently-scoped anomaly -- N consecutive requests
-            # naming the exact same (kind, consequence, payload, artifact_code) is a mechanical
-            # retry loop, not "many different reasonable observations" (which must never trip
-            # this). Checked, and refused, BEFORE this Nth repeat is ever dispatched -- the first
-            # N-1 identical requests are dispatched for real (a model retrying once or twice is
-            # not yet a loop); only the Nth consecutive one is refused.
-            signature = (intent.kind, intent.consequence, intent.payload, intent.artifact_code)
-            if signature == last_operation_signature:
-                consecutive_repeat_count += 1
-            else:
-                consecutive_repeat_count = 1
-                last_operation_signature = signature
+            # docstring above): a narrower, independently-scoped anomaly -- N requests naming the
+            # exact same (kind, consequence, payload, artifact_code) recurring within a small,
+            # BOUNDED recent window (self._loop_detection_window_size, __init__) is a mechanical
+            # non-progress loop, not "many different reasonable observations" (which must never
+            # trip this). Deliberately a sliding window, not strict consecutiveness: a purely
+            # consecutive repeat (A, A, A, ...) and an alternating probing pattern (A, B, A, B,
+            # A, ...) are the same kind of non-progress to a caller watching from outside, and the
+            # window is sized (2N-1) so both trip at the same Nth occurrence of the repeated
+            # signature. Still bounded, not a history-wide duplicate ban: the window only ever
+            # holds this turn's most recent few requests, so a legitimate revisit of the same
+            # observation much later in a long, otherwise-varied turn ages out of it and is never
+            # penalized. `consequence` is folded into the signature only when it is actually
+            # load-bearing for the active profile (`consequence_is_load_bearing`, __init__,
+            # threaded from `ExecutionProfile.consequence_is_load_bearing`, composition.py) -- a
+            # profile where `Policy` never reads `intent.consequence` at all (e.g. planning_profile
+            # /`compose_kind_profile()`) must not let two otherwise-identical requests evade
+            # detection merely by alternating a field that changes nothing about what happens.
+            # Checked, and refused, BEFORE this Nth occurrence is ever dispatched -- every prior
+            # occurrence within the window was dispatched for real.
+            signature = (
+                intent.kind,
+                intent.consequence if self._consequence_is_load_bearing else None,
+                intent.payload,
+                intent.artifact_code,
+            )
+            recent_operation_signatures.append(signature)
+            repeat_count_in_window = recent_operation_signatures.count(signature)
 
-            if consecutive_repeat_count >= self._repeated_operation_limit:
+            if repeat_count_in_window >= self._repeated_operation_limit:
                 working_history.append({"role": "assistant", "content": completion})
                 working_history.append({
                     "role": "effect",
                     "content": (
                         f"the same operation (kind={intent.kind!r}) was requested "
-                        f"{consecutive_repeat_count} times in a row -- refusing to dispatch it "
-                        "again this turn; this looks like a mechanical retry loop, not distinct "
-                        "observations, so the turn is ending here"
+                        f"{repeat_count_in_window} times within the last "
+                        f"{len(recent_operation_signatures)} operation requests -- refusing to "
+                        "dispatch it again this turn; this looks like a mechanical retry loop, "
+                        "not distinct observations, so the turn is ending here"
                     ),
                 })
                 commit()
@@ -428,6 +462,15 @@ class CognitiveLoop:
             )
 
             if not dispatched_ok and category in _FAIL_CLOSED_CATEGORIES:
+                # This attempt itself is a real, already-committed mediation event (commit()
+                # above already made it permanent) -- last_operations must reflect it exactly as
+                # it would any other dispatch attempt, or a caller catching the raise below could
+                # see an empty last_operations despite a real dispatch having just happened this
+                # turn (the truthful-failure-reporting gap this fixes: module docstring's
+                # "Truthful failure reporting" section).
+                outcome = _build_operation_outcome(intent.intent_id, outcome_source, category)
+                operations.append(outcome)
+                self.last_operations = tuple(operations)
                 self._emit(
                     "operation.result", turn_id=turn_id, cycle_id=cycle_id, intent_id=intent.intent_id,
                     category=category.value, reason=str(outcome_source),
