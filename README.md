@@ -97,16 +97,45 @@ artifact substitution is refused before the privileged execution boundary ever r
 authentic execution identity lying about what it did does not become corroborated merely because its
 identity is real.
 
-The reference harness is not yet a complete multi-agent, multi-model harness. Two independently
-running `CognitiveLoop` instances, sharing one `Gate`/`Broker`, compose correctly — one holding its
-own root `Authority`, the other holding an `Authority` delegated from the first, each producing its
-own model-generated intent. What doesn't exist yet is an *orchestration* component: something that
-decides when to delegate, constructs the second loop, and supplies its own model, in a live
-deployment rather than a test.
-That is harness capability rather than a missing piece of the security architecture — the thesis is
-demonstrated without it — which makes it deferred, not unimportant: the reference harness is a
-consumer of the SDK, and improving it is part of this project (see **Project status and current
-direction**).
+**The reference harness today: a reasonably usable planning agent, not yet an end-to-end builder.**
+`examples/repl.py --profile planning` (the default) is a long-horizon conversational agent that can
+converse, reason, mediated-investigate a repository (`read_file`/`list_directory`/
+`search_repository` — real `Intent → Gate → Decision → Executor → Effect` cycles, not
+instructed-only restraint), and compile a `WorkOrder` — a self-contained specification for a future
+component to realize, itself never executed, granting no authority. It runs against a real model
+provider and keeps a durable JSONL session log. That's a real milestone — the planning/REPL side has
+crossed from cryptic experimental machinery into something a person can sit in front of — and a
+narrow one: it is not a claim that the reference harness can build a project end to end.
+
+    human
+      ↕
+    primary planning agent        ← SUBSTANTIAL today: conversation, mediated investigation, planning
+      ↓
+    WorkOrder                     ← EXISTS: compiled, self-contained, never executed, grants no authority
+      ↓
+    Constructor                   ← NOT YET BUILT
+      ↓
+    bounded worker(s)             ← NOT YET BUILT
+      ↓
+    verification                  ← NOT YET BUILT
+      ↓
+    verified workspace/Git landing ← NOT YET BUILT
+
+Full current architecture, typed operation surface, and reliability work:
+[`docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md`](docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md).
+
+Separately: two independently running `CognitiveLoop` instances, sharing one `Gate`/`Broker`,
+compose correctly today — one holding its own root `Authority`, the other holding an `Authority`
+delegated from the first, each producing its own model-generated intent
+(`tests/test_harness_loop_linux.py`). What doesn't exist yet is an *orchestration* component: something
+that decides when to delegate, constructs a second loop, and supplies its own model, in a live
+deployment rather than a test — one of several missing pieces on the path to the Constructor/worker
+picture above, not the whole of what's missing.
+
+None of this is a missing piece of the security architecture itself — the mediation thesis is
+demonstrated without a Constructor or workers existing yet. It is unfinished reference-application
+engineering: the reference harness is a consumer of the SDK, and finishing it is part of this
+project, distinct from the SDK it consumes (see **Project status and current direction**).
 
 Today, Siphonophore demonstrates:
 
@@ -223,8 +252,15 @@ newest. Active, in priority order:
    becoming a Kubernetes application or a Kubernetes-specific security tool.
 3. **Keep Linux/local first-class.** It is currently the *only* substrate that establishes execution
    identity independently of the executing process; it is not a legacy path.
-4. **Improve the reference harness UX** from research-fixture quality toward something practical to
-   use daily. A usable reference harness is part of this project, distinct from the SDK it consumes.
+4. **Extend the reference harness from a usable planning agent toward an end-to-end builder.** The
+   planning/REPL side (`examples/repl.py --profile planning`) has crossed from research-fixture
+   quality into something reasonably usable daily — conversation, mediated investigation, `WorkOrder`
+   compilation, session logging, real-provider interaction. What isn't yet built is the path from a
+   finalized `WorkOrder` to completed, landed work: the Constructor, bounded build/worker agent(s),
+   the contained fabrication-floor execution environment and its lifecycle, workspace/Git movement
+   between the user's project and an isolated execution environment, verification/acceptance, and
+   final landing. A complete, usable reference harness is part of this project, distinct from the SDK
+   it consumes.
 5. **Make execution verification, correlation, and attribution more rigorous** — and explicit about
    which layer and which evidence source supports each claim (`DESIGN.md` §10's table).
 6. **Integrate the concrete engineering lessons** from the completed Kubernetes experimental arc.
@@ -252,12 +288,22 @@ everything the architecture might eventually support.
   not implemented; adding one should not require redefining Siphonophore's core semantics, though
   substrate-specific configuration, policy mapping, deployment integration, or evidence mechanisms
   may still be needed alongside the new backend.
-- The reference harness works but is not yet pleasant to use: `examples/repl.py` drives a single
-  `CognitiveLoop` on the authority-less path, registers only the two portable execution tiers (so
-  neither the `uid_cgroup` nor the `k8s_pod` substrate is reachable from it), and surfaces the
-  resulting `Effect` but never the `Decision` behind it — `Broker.dispatch()` returns only the
-  `Effect`, so an operator cannot see what was actually authorized. Improving this is active work
-  (see **Project status and current direction**), not deferred scaffolding.
+- The reference harness's planning/REPL side (`examples/repl.py --profile planning`, the default) is
+  reasonably usable today: ordinary conversation, mediated multi-step repository investigation, real
+  provider interaction, `WorkOrder` compilation, and durable JSONL session logging — see
+  [`docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md`](docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md). It
+  surfaces `Decision` context (`execution_class`, `authority_id`, `order_id`) alongside each
+  operation's outcome, not only the bare `Effect`, and can optionally hold a real, granted root
+  `Authority` (`--grant-root-authority`) rather than always running authority-less. What's still
+  missing is the entire path from a finalized `WorkOrder` to completed, landed work: no Constructor
+  reads one and realizes it, no bounded build/worker agent exists, no contained fabrication-floor
+  execution environment or its lifecycle, no workspace/Git movement between the user's project and an
+  isolated execution environment, no verification/acceptance step, and no final landing of the
+  result. Neither `uid_cgroup` nor `k8s_pod` is reachable from `repl.py` today — it registers only
+  what the active profile needs (`planning`: three read-only backends; `--profile portable`:
+  `same_process`/`separate_process`). Building the missing path, and improving the planning side
+  further, are both active work (see **Project status and current direction**), not deferred
+  scaffolding.
 - Platform integrity/attestation is not implemented (see `DESIGN.md` §8). Production credential
   delivery is also not implemented — SPIFFE/SPIRE and JWT+Vault were both considered and neither was
   committed to. See [`docs/EXECUTION.md`](docs/EXECUTION.md).
@@ -362,9 +408,11 @@ necessarily provides one.
   narrow privilege boundary required by UID/cgroup execution. Its pinned interface lives in
   `contracts/spawn_helper.md`.
 - **`scripts/`** — privilege-separated account-management wrappers and sudoers templates.
-- **`siphonophore_harness/`** — the reference harness, a consumer of the SDK: the minimal cognitive
-  loop, model interface, Anthropic-backed model implementation, intent parsing, and broker. An
-  external harness can consume `siphonophore_core` without any of this.
+- **`siphonophore_harness/`** — the reference harness, a consumer of the SDK: the cognitive loop
+  (multi-cycle turns, transactional history, loop/runaway detection), model interface, Anthropic-backed
+  model implementation, intent parsing, broker, `WorkOrder` compilation, named execution-profile
+  composition (planning/portable), and durable JSONL session logging. An external harness can consume
+  `siphonophore_core` without any of this.
 - **`examples/repl.py`** — the interactive live-model reference harness.
 - **`experiments/`** — real evidence produced outside the core: not a product feature, not imported
   by shipped code, not a dependency edge.
@@ -415,20 +463,37 @@ must be run as root (e.g. inside a root shell in the colima VM) rather than expe
 ## Running the reference harness
 
 `examples/repl.py` is the reference harness: a consumer of the SDK, and the place the SDK's
-abstractions get exercised by something with a person in front of it. Making it genuinely pleasant to
-use is current work, not scaffolding — see **Project status and current direction**.
+abstractions get exercised by something with a person in front of it. The planning/REPL side has
+crossed from research-fixture quality into something reasonably usable daily; building the rest of
+it — the still-missing path from a finalized `WorkOrder` to completed work — is current work, not
+scaffolding — see **Project status and current direction**.
 
 ```bash
 .venv/bin/python examples/repl.py --model <a current Anthropic model id>
 ```
 
-Each turn drives a real model call through intent parsing, `Gate`, and `Executor`.
+Defaults to `--profile planning`: a long-horizon conversational agent that can converse, reason,
+mediated-investigate the repository (`read_file`/`list_directory`/`search_repository` — real
+`Intent → Gate → Decision → Executor → Effect` cycles, not instructed-only restraint), and compile a
+`WorkOrder`, but structurally cannot edit the repository, run shell commands, or execute arbitrary
+code — no code-execution backend is registered and the active `Policy` has no mapping for either
+code-bearing kind. `--profile portable` registers the original `same_process`/`separate_process`
+code-execution tiers instead, for comparison/testing. A durable JSONL session event log is written by
+default (`--session-log`/`--no-session-log`). Full current architecture, typed operation surface, and
+reliability work: [`docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md`](docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md).
 
-It currently uses the authority-less path — a single `CognitiveLoop`/`Broker` pair, one
-principal, no delegation — and registers only the two portable execution tiers. `CognitiveLoop` and `Broker.dispatch()` are both authority-aware now (see
-**Current state** above) and a second, real live agent could be constructed the same way
+Each turn drives one or more real model calls through intent parsing, `Gate`, and `Executor`, until
+the model produces a message-only completion or a `WorkOrder` — not a small, fixed per-turn operation
+count; see the architecture doc for the safety-net/loop-detection backstops that replaced that early
+design.
+
+It currently uses the authority-less path by default — a single `CognitiveLoop`/`Broker` pair, one
+principal, no delegation — though it can optionally hold a real, granted root `Authority`
+(`--grant-root-authority`; `CognitiveLoop` and `Broker.dispatch()` are both authority-aware, see
+**Current state** above). A second, real live agent could be constructed the same way
 `tests/test_harness_loop_linux.py` does — but `examples/repl.py` itself doesn't do that yet; nothing
-here decides when to spin one up or supplies its model. That's still separate, later work.
+here decides when to spin one up or supplies its model. That's still separate, later work — one piece
+of the still-missing Constructor/worker-orchestration path (see **Current state** above).
 
 ## Documentation
 
@@ -446,6 +511,13 @@ here decides when to spin one up or supplies its model. That's still separate, l
   full, including the execution-identity-versus-logical-agent-identity distinction.
 - **`DESIGN.md`** — current architecture, guarantees, trust boundaries, assumptions, and explicitly
   open questions.
+- **[`docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md`](docs/REFERENCE_HARNESS_V1_ARCHITECTURE.md)** — the
+  authoritative current description of the reference harness itself: the planning/cognitive-agent
+  profile, the typed operation surface, `WorkOrder`, transactional history, session logging, and the
+  running addenda recording each reliability-hardening tranche (most recently, post-review hardening
+  with live-provider acceptance evidence). Superseding `docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md`
+  and `docs/REFERENCE_HARNESS_V1_HORIZON.md` — see those for the design process that led here, kept as
+  historical record.
 - **`HISTORY.md`** — experiments, failures, corrections, and the reasoning by which the current
   architecture was reached.
 - **[`experiments/k8s_agentwatch_observation/README.md`](experiments/k8s_agentwatch_observation/README.md)**

@@ -249,9 +249,14 @@ through the Gate.**
 Read that at its actual scope, which §10 states in general: it is a property of the reference
 harness's `CognitiveLoop` — enforced by static analysis in `test_harness_structural_proof.py`, which
 checks that the loop and its neighbours import no effect-producing stdlib module and that
-`CognitiveLoop.__init__` accepts nothing beyond `model`, `broker`, `principal_id`, `authority`. It is
-a real structural property of that class, not a claim about arbitrary code running in the same
-process, which no library can make.
+`CognitiveLoop.__init__` accepts nothing beyond `model`, `broker`, `principal_id`, `authority`, plus
+whatever plain, inert configuration values (bounds it compares running counts against, booleans that
+select which existing field it reads, a callable it invokes with an already-built dict) the harness
+has since grown — never a second object with a capability of its own, and never anything the model's
+own completion can name or influence. The exact current parameter list is the test's own assertion,
+not this document's to enumerate and let drift; what's structural and load-bearing is the *shape* —
+one `Broker` reference, nothing else that can reach an effect. It is a real structural property of
+that class, not a claim about arbitrary code running in the same process, which no library can make.
 
 An earlier version of this section additionally required that delegation be demonstrated "reducing
 to the exact same primitive a tool call does, not a separately-mediated mechanism." That framing was

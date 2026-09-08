@@ -19,6 +19,52 @@ the model requests is explicit and independently mediated. Users should not need
 `Intent`/`Decision`/`Effect`/`GateViolation` subclasses/JSON envelope mechanics to use it; those
 remain available through `--verbose` and the JSONL event log.
 
+## Scope: Where This Document Sits
+
+This document describes the reference harness as a *consumer* of Siphonophore, not Siphonophore
+itself:
+
+    reference harness (siphonophore_harness/)
+      |
+      v
+    Siphonophore SDK / core (siphonophore_core/)   <- substrate-neutral, see README.md/DESIGN.md §10
+      |
+      v
+    execution substrate(s)  (Linux/local, Kubernetes, ...)
+
+Within the harness, everything this document covers is the *planning* side of a larger, still-partial
+picture:
+
+    human
+      |
+      v
+    primary planning agent      <- THIS DOCUMENT: substantial today (conversation, mediated
+      |                              investigation, planning, WorkOrder compilation)
+      v
+    WorkOrder                   <- EXISTS: compiled, self-contained, never executed, grants no authority
+      |
+      v
+    Constructor                 <- NOT YET BUILT (see "WorkOrder Model" below for the exact
+      |                              non-guarantee: nothing here reads a WorkOrder and realizes it)
+      v
+    bounded worker(s)           <- NOT YET BUILT
+      |
+      v
+    verification                <- NOT YET BUILT
+      |
+      v
+    verified workspace/Git landing  <- NOT YET BUILT
+
+Historically, much of this harness existed to exercise, demonstrate, and test Siphonophore's own
+mediation and attribution machinery — that history is legitimate (see
+`docs/REFERENCE_HARNESS_CONTINUATION_DESIGN.md`, `docs/REFERENCE_HARNESS_V1_HORIZON.md`, and the
+design-stage documents they in turn reconcile, all kept as historical record) but no longer
+completely describes this project: the planning/REPL side below has a reasonably usable primary
+interface today, not merely test apparatus. It is, just as clearly, not yet a claim that the
+reference harness can carry a request from a human's intent through to completed, landed work —
+every stage from Constructor onward is future work, out of scope for this document and for every
+addendum appended to it so far.
+
 ## The First Reference Agent: a Planning/Cognitive Workspace
 
 `examples/repl.py --profile planning` (the default) is a long-horizon conversational agent that
