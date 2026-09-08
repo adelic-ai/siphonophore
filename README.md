@@ -1,5 +1,14 @@
 # siphonophore
 
+> **Current project status (2026-09).** Reference Harness V1.1 post-review hardening and the
+> subsequent documentation refresh are both complete. Further implementation is paused at this
+> baseline while the next architecture direction is researched. The immediate research focus is the
+> Google Agent Development Kit (ADK) — specifically, whether ADK can assemble a modern
+> general-purpose agent with Siphonophore Core integrated into its execution path. This research will
+> help determine which harness/agent-development responsibilities Siphonophore should own versus
+> leave to external frameworks. `siphonophore_harness` remains the reference/research harness in the
+> meantime. **ADK is not yet a required dependency, and no replacement decision has been made.**
+
 **A platform-independent execution-security substrate for agent systems.**
 
 Siphonophore is an experimental execution-security SDK. It mediates requested execution while
