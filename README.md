@@ -1,17 +1,32 @@
 # siphonophore
 
-> **Current project status (2026-09).** Reference Harness V1.1 post-review hardening and the
-> subsequent documentation refresh are both complete. Further implementation is paused at this
-> baseline while Siphonophore Core is re-examined and the next architecture direction is researched.
-> The immediate research focus is how a smaller, framework-independent Siphonophore Core can
-> integrate naturally with existing agent-development and runtime environments, beginning with the
-> Google Agent Development Kit (ADK) and NVIDIA NeMo. In parallel, the Core's semantic model is being
-> researched against outside semantic realities and standards before further refactoring.
-> `siphonophore_harness` remains the project's reference and research harness. **Neither ADK nor NeMo
-> has been selected as a required dependency, and no decision has been made to replace the existing
-> harness.**
-
 **A platform-independent execution-security substrate for agent systems.**
+
+Siphonophore sits between an agent's decision to act and the action actually running. Every tool
+call becomes an `Intent` that must pass a `Gate`, receive a cryptographically bound `Decision`, and
+be independently re-verified by the `Executor` before anything executes — and what the agent *says*
+it did can afterwards be reconciled against what the OS *observed*.
+
+**What works today:**
+
+- **A live-model planning agent** (`examples/repl.py`) — a long-horizon conversational agent that
+  investigates a repository through mediated tool calls (`read_file`, `list_directory`,
+  `search_repository`), each a real `Intent → Gate → Decision → Executor → Effect` cycle, and
+  compiles a structured `WorkOrder`. Runs against a real model provider with a durable JSONL
+  session log.
+- **Delegated, scope-attenuated authority** — one agent derives narrower authority for another;
+  two independently running agent loops sharing one `Gate` compose correctly
+  (`tests/test_harness_loop_linux.py`).
+- **Negative enforcement** — fabricated or spliced authority, scope expansion, principal
+  impersonation, artifact substitution, forged Decisions, replay, and execution-class tampering are
+  refused, not just logged (`tests/test_authority.py`, `tests/test_mediation.py`,
+  `tests/test_execution.py`).
+- **Real OS-level execution identity** — ephemeral system user and cgroup v2 leaf per execution,
+  with kernel-verified (`SO_PEERCRED`) check-in.
+- **Self-report vs. ground truth** — an agent with a genuine, verified identity that lies about what
+  it did reconciles as `contradiction` / `unreported_activity`, never `corroborated`.
+- **Two execution substrates** — Linux/local and Kubernetes (`k8s_pod`, on a live `kind` cluster),
+  behind one boundary with no core changes.
 
 Siphonophore is an experimental execution-security SDK. It mediates requested execution while
 carrying identity, authority, delegation, and execution-relevant provenance across the boundary where
@@ -251,6 +266,17 @@ product feature, not imported by any shipped code, and not a dependency edge.
   are in that directory's README.
 
 ### Project status and current direction
+
+**Current phase (2026-09).** Reference Harness V1.1 post-review hardening and the
+subsequent documentation refresh are both complete. Further implementation is paused at this
+baseline while Siphonophore Core is re-examined and the next architecture direction is researched.
+The immediate research focus is how a smaller, framework-independent Siphonophore Core can
+integrate naturally with existing agent-development and runtime environments, beginning with the
+Google Agent Development Kit (ADK) and NVIDIA NeMo. In parallel, the Core's semantic model is being
+researched against outside semantic realities and standards before further refactoring.
+`siphonophore_harness` remains the project's reference and research harness. **Neither ADK nor NeMo
+has been selected as a required dependency, and no decision has been made to replace the existing
+harness.**
 
 **This is the canonical answer to "what is this project working on now."** It exists so that work
 here follows the project's engineering direction rather than whichever artifact happens to be
